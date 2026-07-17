@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>amallo</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="container">
+      <header>
+        <h1>amallo</h1>
+        <p class="subtitle">Secure remote access to your local Ollama</p>
+      </header>
+
+      <section class="card">
+        <h2>ngrok</h2>
+        <label for="ngrok-token">
+          Authtoken
+          <span id="ngrok-token-state" class="hint"></span>
+        </label>
+        <input
+          id="ngrok-token"
+          type="password"
+          placeholder="paste your ngrok authtoken"
+          autocomplete="off"
+        />
+
+        <label for="static-domain">Static domain <span class="hint">(optional — leave empty for a random URL)</span></label>
+        <input
+          id="static-domain"
+          type="text"
+          placeholder="my-name.ngrok-free.app"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </section>
+
+      <section class="card">
+        <h2>Proxy</h2>
+        <div class="row">
+          <label for="proxy-port" class="inline">Local port</label>
+          <input id="proxy-port" type="number" min="1024" max="65535" />
+        </div>
+        <label class="checkbox">
+          <input id="bind-lan" type="checkbox" />
+          Allow LAN access (bind to 0.0.0.0)
+        </label>
+
+        <label for="bearer-token">Bearer token <span class="hint">(clients send this as API key)</span></label>
+        <div class="row">
+          <input id="bearer-token" type="text" readonly />
+          <button id="copy-bearer" type="button">Copy</button>
+          <button id="regen-bearer" type="button" title="Invalidates the old token immediately">↻</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Behavior</h2>
+        <label class="checkbox">
+          <input id="autostart" type="checkbox" />
+          Launch amallo at login
+        </label>
+        <label class="checkbox">
+          <input id="auto-start-tunnel" type="checkbox" />
+          Start tunnel automatically on launch
+        </label>
+      </section>
+
+      <div class="actions">
+        <button id="toggle-tunnel" type="button" class="primary">Start Tunnel</button>
+      </div>
+
+      <footer id="status" class="status stopped">Tunnel: stopped</footer>
+      <p class="autosave-hint">Changes are saved automatically.</p>
+    </main>
+  </body>
+</html>
