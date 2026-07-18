@@ -2,6 +2,9 @@
   "name": "amallo",
   "private": true,
   "version": "0.1.0",
+  "description": "Securely use the AI models on your own computer from anywhere.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": "https://github.com/OpenCharUI/amallo",
   "type": "module",
   "scripts": {
     "dev": "vite",

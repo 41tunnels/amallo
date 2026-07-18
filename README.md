@@ -1,8 +1,20 @@
 # amallo
 
-Securely expose your **local Ollama** instance to the internet from a tray/menu-bar app.
+**Use the AI models on your own computer from anywhere — securely.**
 
-amallo runs an authenticated reverse proxy in front of Ollama and publishes it through an [ngrok](https://ngrok.com) tunnel. Every request must carry a bearer token, so only clients you've given the token can reach your models — no matter that the URL is public.
+amallo lets you keep [Ollama](https://ollama.com) and its language models running on your own Mac or PC, while still reaching them from your phone, another laptop, or a web app — wherever you happen to be. Your models and your conversations stay on your machine; amallo simply opens a private, protected door to them over the internet.
+
+It sits quietly in your menu bar (macOS) or system tray (Windows). One click puts your local AI online behind a personal access key, and only devices that have that key can connect — everyone else is turned away.
+
+**Why use it**
+
+- **Private by design** — everything runs on hardware you own; nothing is handed to a third-party AI provider.
+- **Your models, on the go** — talk to them from a laptop, a phone, or a browser app like OpenCharUI.
+- **No usage bills** — your own computer does the work, so there's nothing to pay per message.
+
+## How it works
+
+Under the hood, amallo runs an authenticated reverse proxy in front of Ollama and publishes it through an [ngrok](https://ngrok.com) tunnel. Every request must carry a bearer token, so only clients you've given the token to can reach your models — even though the URL is public.
 
 ```
 Internet ──ngrok tunnel──▶ amallo proxy (127.0.0.1:11435) ──▶ Ollama (127.0.0.1:11434)

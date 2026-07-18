@@ -18,7 +18,8 @@ pub enum TunnelStatus {
 }
 
 pub struct AppState {
-    /// Bearer token the proxy expects. Kept in memory, persisted in the OS keychain.
+    /// Bearer token the proxy expects. Kept in memory, persisted to `secrets.json`
+    /// (0600) in the app data dir — see `secrets.rs`.
     pub bearer_token: RwLock<String>,
     /// Non-secret settings, persisted via tauri-plugin-store.
     pub settings: RwLock<Settings>,

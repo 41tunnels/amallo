@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Securely expose your local Ollama instance via an authenticated ngrok tunnel"
 authors = ["tehfonsi <7488280+tehfonsi@users.noreply.github.com>"]
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/OpenCharUI/amallo"
 
 [lib]
 name = "amallo_lib"
