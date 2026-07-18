@@ -3,6 +3,7 @@ mod proxy;
 mod secrets;
 mod settings;
 mod state;
+mod sync;
 mod tray;
 mod tunnel;
 
@@ -37,7 +38,13 @@ pub fn run() {
             let settings = settings::load(app.handle());
             let auto_start_tunnel = settings.auto_start_tunnel;
 
-            app.manage(Arc::new(AppState::new(bearer_token, settings)));
+            let sync_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("could not resolve app data dir: {e}"))?
+                .join("sync");
+
+            app.manage(Arc::new(AppState::new(bearer_token, settings, sync_dir)));
 
             proxy::respawn(app.handle())?;
             tray::build(app.handle())?;

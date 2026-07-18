@@ -3,13 +3,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use axum::Router;
 use subtle::ConstantTimeEq;
 use tauri::{AppHandle, Manager, Wry};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::state::AppState;
 
@@ -41,8 +43,8 @@ const SKIP_RESPONSE_HEADERS: &[HeaderName] = &[
 ];
 
 #[derive(Clone)]
-struct ProxyCtx {
-    state: Arc<AppState>,
+pub(crate) struct ProxyCtx {
+    pub(crate) state: Arc<AppState>,
     client: reqwest::Client,
 }
 
@@ -145,9 +147,37 @@ fn router(state: Arc<AppState>) -> Router {
             .build()
             .expect("reqwest client"),
     };
+    // Browser clients (e.g. OpenCharUI web) need CORS: preflights carry no
+    // Authorization header, so this layer must sit outside the auth layer to
+    // answer them, and to stamp Access-Control-Allow-Origin onto 401s so the
+    // browser can read the status. Wildcard origin is fine — auth is a bearer
+    // token, never cookies. `allow_headers` is explicit because the `*`
+    // wildcard does not cover `Authorization` per the Fetch spec.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            HeaderName::from_static("ngrok-skip-browser-warning"),
+        ]);
+
+    // amallo-native document sync. Explicit routes take precedence over the
+    // catch-all `forward`, and `/amallo/*` cannot collide with Ollama's `/api/*`
+    // or `/v1/*`. The larger body limit (avatar batches) applies to this route
+    // only; the streaming fallback keeps axum's default.
+    let sync_routes = Router::new()
+        .route(
+            "/amallo/sync/{collection}",
+            get(crate::sync::sync_get).post(crate::sync::sync_post),
+        )
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
+
     Router::new()
+        .merge(sync_routes)
         .fallback(forward)
         .layer(middleware::from_fn_with_state(ctx.clone(), require_bearer))
+        .layer(cors) // added last => outermost, runs before auth
         .with_state(ctx)
 }
 
@@ -185,4 +215,248 @@ pub fn respawn(app: &AppHandle<Wry>) -> Result<(), String> {
 
     *state.proxy_task.lock().unwrap() = Some(task);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+
+    const TOKEN: &str = "test-token";
+
+    /// Serve the real router on an ephemeral port. Returns the base URL and the
+    /// sync-store temp dir guard, which the caller must keep alive for the test.
+    async fn spawn_test_proxy() -> (String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState::new(
+            TOKEN.to_string(),
+            Settings::default(),
+            dir.path().to_path_buf(),
+        ));
+        let router = router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{addr}"), dir)
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_passes_without_auth() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let res = reqwest::Client::new()
+            .request(reqwest::Method::OPTIONS, format!("{base}/api/tags"))
+            .header("Origin", "http://localhost:5173")
+            .header("Access-Control-Request-Method", "GET")
+            .header("Access-Control-Request-Headers", "authorization")
+            .send()
+            .await
+            .unwrap();
+
+        assert!(res.status().is_success(), "preflight must not require auth");
+        assert_eq!(
+            res.headers().get("access-control-allow-origin").unwrap(),
+            "*"
+        );
+        let allow_headers = res
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(allow_headers.contains("authorization"));
+        assert!(allow_headers.contains("ngrok-skip-browser-warning"));
+    }
+
+    #[tokio::test]
+    async fn unauthorized_response_carries_cors_header() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let res = reqwest::Client::new()
+            .get(format!("{base}/api/tags"))
+            .header("Origin", "http://localhost:5173")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            res.headers().get("access-control-allow-origin").unwrap(),
+            "*"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_token_still_required_for_actual_requests() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        let wrong = client
+            .get(format!("{base}/api/tags"))
+            .header("Authorization", "Bearer wrong-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // With the right token auth passes; the request then reaches the
+        // forwarder (200 if a local Ollama is running, 502 otherwise).
+        let ok = client
+            .get(format!("{base}/api/tags"))
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(ok.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    fn auth(client: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        client.header("Authorization", format!("Bearer {TOKEN}"))
+    }
+
+    #[tokio::test]
+    async fn sync_round_trip_and_known_filtering() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        // Push two records.
+        let resp = auth(client.post(format!("{base}/amallo/sync/characters")))
+            .json(&serde_json::json!({
+                "records": [
+                    { "id": "a", "updatedAt": 100, "deleted": false, "data": { "name": "A" } },
+                    { "id": "b", "updatedAt": 100, "deleted": false, "data": { "name": "B" } }
+                ],
+                "known": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+        // A second client that knows a@100 but not b gets only b back.
+        let body: serde_json::Value = auth(client.post(format!("{base}/amallo/sync/characters")))
+            .json(&serde_json::json!({ "records": [], "known": { "a": 100 } }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let records = body["records"].as_array().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["id"], "b");
+
+        // GET returns everything.
+        let all: serde_json::Value = auth(client.get(format!("{base}/amallo/sync/characters")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(all["records"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sync_tombstone_beats_data_then_resurrects() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        auth(client.post(format!("{base}/amallo/sync/chats")))
+            .json(&serde_json::json!({
+                "records": [{ "id": "c", "updatedAt": 100, "deleted": false, "data": { "t": "hi" } }],
+                "known": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        // Tombstone at the same timestamp wins the tie.
+        auth(client.post(format!("{base}/amallo/sync/chats")))
+            .json(&serde_json::json!({
+                "records": [{ "id": "c", "updatedAt": 100, "deleted": true }],
+                "known": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        let all: serde_json::Value = auth(client.get(format!("{base}/amallo/sync/chats")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(all["records"][0]["deleted"], true);
+
+        // A newer live record resurrects it.
+        auth(client.post(format!("{base}/amallo/sync/chats")))
+            .json(&serde_json::json!({
+                "records": [{ "id": "c", "updatedAt": 200, "deleted": false, "data": { "t": "back" } }],
+                "known": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        let all: serde_json::Value = auth(client.get(format!("{base}/amallo/sync/chats")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(all["records"][0]["deleted"], false);
+        assert_eq!(all["records"][0]["updatedAt"], 200);
+    }
+
+    #[tokio::test]
+    async fn sync_reports_missing_for_wiped_server() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+        let body: serde_json::Value = auth(client.post(format!("{base}/amallo/sync/personas")))
+            .json(&serde_json::json!({ "records": [], "known": { "x": 100 } }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(body["missing"].as_array().unwrap(), &vec!["x"]);
+    }
+
+    #[tokio::test]
+    async fn sync_requires_auth() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let res = reqwest::Client::new()
+            .post(format!("{base}/amallo/sync/characters"))
+            .json(&serde_json::json!({ "records": [], "known": {} }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn sync_unknown_collection_is_404() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let res = auth(reqwest::Client::new().post(format!("{base}/amallo/sync/bogus")))
+            .json(&serde_json::json!({ "records": [], "known": {} }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sync_bad_json_is_rejected() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let res = auth(reqwest::Client::new().post(format!("{base}/amallo/sync/characters")))
+            .header("Content-Type", "application/json")
+            .body("not json")
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_client_error());
+    }
 }

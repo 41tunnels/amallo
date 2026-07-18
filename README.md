@@ -47,6 +47,8 @@ curl https://<your-url>/v1/chat/completions \
   -d '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+Browser-based clients work too: the proxy answers CORS preflights itself (any origin, `Authorization` / `Content-Type` / `ngrok-skip-browser-warning` headers allowed), so a web app like OpenCharUI can connect directly with the connection JSON from the tray menu.
+
 ## Development
 
 Prerequisites: [Rust](https://rustup.rs), Node 20+, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.

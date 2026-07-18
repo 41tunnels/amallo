@@ -21,6 +21,7 @@ tauri-plugin-clipboard-manager = "2.3"
 tauri-plugin-autostart = "2.5"
 ngrok = "0.19"
 axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
 rand = "0.9"
@@ -31,3 +32,9 @@ serde_json = "1"
 futures-util = "0.3"
 local-ip-address = "0.6"
 rustls = "0.23"
+
+[dev-dependencies]
+tempfile = "3"
+# Test-only: adds the `json` feature (unioned with the main reqwest dep) so
+# sync endpoint tests can serialize/deserialize request and response bodies.
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

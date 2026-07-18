@@ -1,8 +1,10 @@
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use serde::Serialize;
 
 use crate::settings::Settings;
+use crate::sync::SyncStore;
 use crate::tray::TrayItems;
 use crate::tunnel::TunnelHandle;
 
@@ -27,10 +29,12 @@ pub struct AppState {
     pub proxy_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Menu item handles for live tray updates.
     pub tray_items: OnceLock<TrayItems>,
+    /// Document store backing the `/amallo/sync/*` endpoints.
+    pub sync: SyncStore,
 }
 
 impl AppState {
-    pub fn new(bearer_token: String, settings: Settings) -> Self {
+    pub fn new(bearer_token: String, settings: Settings, sync_dir: PathBuf) -> Self {
         Self {
             bearer_token: RwLock::new(bearer_token),
             settings: RwLock::new(settings),
@@ -38,6 +42,7 @@ impl AppState {
             status: RwLock::new(TunnelStatus::Stopped),
             proxy_task: Mutex::new(None),
             tray_items: OnceLock::new(),
+            sync: SyncStore::new(sync_dir),
         }
     }
 
