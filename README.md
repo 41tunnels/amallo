@@ -78,3 +78,7 @@ Cross-platform releases are built in CI — see [`.github/workflows/release.yml`
 - **ngrok free tier** shows a browser interstitial on the first visit from a browser and has bandwidth caps. API/CLI clients are unaffected.
 - Secrets live in `<app-data-dir>/secrets.json` with `0600` permissions (e.g. `~/Library/Application Support/io.github.opencharui.amallo/secrets.json` on macOS). It is **not encrypted at rest** — any process running as your user can read it, and it is not excluded from backups. This matches how ngrok/AWS/Docker store their tokens. Delete the file to reset (a new bearer token is generated on next launch).
 - amallo assumes Ollama's default loopback host. A custom `OLLAMA_HOST` upstream isn't configurable yet.
+
+---
+
+App logo by [Magnific](https://magnific.com).

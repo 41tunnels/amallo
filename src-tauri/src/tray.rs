@@ -84,8 +84,7 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
         url_shown: AtomicBool::new(false),
     });
 
-    // macOS menu bar wants a monochrome template glyph; other platforms use the
-    // colored app icon.
+    // macOS menu bar: solid white alpaca glyph. Other platforms use the app icon.
     #[cfg(target_os = "macos")]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))?;
     #[cfg(not(target_os = "macos"))]
@@ -93,7 +92,8 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main")
         .icon(icon)
-        .icon_as_template(true)
+        // false: keep the glyph pure white (template mode would recolor it).
+        .icon_as_template(false)
         .tooltip("amallo")
         .menu(&menu)
         .show_menu_on_left_click(true)
