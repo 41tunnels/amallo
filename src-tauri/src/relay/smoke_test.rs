@@ -126,7 +126,7 @@ async fn plaintext_relay_round_trip_via_real_processes() {
     let conn_task = tokio::spawn(async move {
         // A single connection attempt is enough for this smoke test — no
         // supervisor/backoff loop needed.
-        let _ = conn::run_once(&relay_url_clone, pair_id, router, bearer).await;
+        let _ = conn::run_once_insecure(&relay_url_clone, pair_id, router, bearer).await;
     });
 
     // Give amallo's side time to register as the agent before fakeclient
@@ -209,7 +209,7 @@ async fn disallowed_path_is_rejected_over_the_real_wire() {
 
     let relay_url_clone = relay_url.clone();
     let conn_task = tokio::spawn(async move {
-        let _ = conn::run_once(&relay_url_clone, pair_id, smoke_router(), "bearer".into()).await;
+        let _ = conn::run_once_insecure(&relay_url_clone, pair_id, smoke_router(), "bearer".into()).await;
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 

@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Wry};
@@ -15,6 +16,15 @@ struct SecretFile {
     ngrok_authtoken: Option<String>,
     #[serde(default)]
     bearer_token: String,
+    /// Relay pairing material (spec §3, §4.2): a 16-byte pair_id and a
+    /// 32-byte PSK, base64url-encoded for JSON storage. `#[serde(default)]`
+    /// so an existing secrets.json without these fields loads cleanly —
+    /// `get_or_create_pairing` fills them in on first use, same as
+    /// `bearer_token`.
+    #[serde(default)]
+    relay_pair_id: String,
+    #[serde(default)]
+    relay_psk: String,
 }
 
 fn secrets_path(app: &AppHandle<Wry>) -> Result<PathBuf, String> {
@@ -103,4 +113,62 @@ pub fn regenerate_bearer_token(app: &AppHandle<Wry>) -> Result<String, String> {
     secrets.bearer_token = generate_token();
     store(app, &secrets)?;
     Ok(secrets.bearer_token)
+}
+
+fn generate_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes
+}
+
+fn encode_pairing(pair_id: [u8; 16], psk: [u8; 32]) -> (String, String) {
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    (b64.encode(pair_id), b64.encode(psk))
+}
+
+fn decode_pairing(pair_id_b64: &str, psk_b64: &str) -> Result<([u8; 16], [u8; 32]), String> {
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let pair_id_bytes = b64
+        .decode(pair_id_b64)
+        .map_err(|e| format!("secrets file has an invalid relay_pair_id ({e}) — regenerate pairing to reset"))?;
+    let psk_bytes = b64
+        .decode(psk_b64)
+        .map_err(|e| format!("secrets file has an invalid relay_psk ({e}) — regenerate pairing to reset"))?;
+    let pair_id: [u8; 16] = pair_id_bytes
+        .try_into()
+        .map_err(|_| "secrets file's relay_pair_id must decode to 16 bytes".to_string())?;
+    let psk: [u8; 32] = psk_bytes
+        .try_into()
+        .map_err(|_| "secrets file's relay_psk must decode to 32 bytes".to_string())?;
+    Ok((pair_id, psk))
+}
+
+/// Load the relay pairing material, generating and persisting a fresh
+/// pair_id+PSK on first use (mirrors `get_or_create_bearer_token`).
+pub fn get_or_create_pairing(app: &AppHandle<Wry>) -> Result<([u8; 16], [u8; 32]), String> {
+    let mut secrets = load(app)?;
+    if secrets.relay_pair_id.is_empty() || secrets.relay_psk.is_empty() {
+        let pair_id = generate_bytes::<16>();
+        let psk = generate_bytes::<32>();
+        let (pair_id_b64, psk_b64) = encode_pairing(pair_id, psk);
+        secrets.relay_pair_id = pair_id_b64;
+        secrets.relay_psk = psk_b64;
+        store(app, &secrets)?;
+        return Ok((pair_id, psk));
+    }
+    decode_pairing(&secrets.relay_pair_id, &secrets.relay_psk)
+}
+
+/// Replace the pairing material with a fresh pair_id+PSK and persist it —
+/// every device paired with the old code loses access immediately (the
+/// relay only recognizes the new pair_id once amallo reconnects with it).
+pub fn regenerate_pairing(app: &AppHandle<Wry>) -> Result<([u8; 16], [u8; 32]), String> {
+    let mut secrets = load(app)?;
+    let pair_id = generate_bytes::<16>();
+    let psk = generate_bytes::<32>();
+    let (pair_id_b64, psk_b64) = encode_pairing(pair_id, psk);
+    secrets.relay_pair_id = pair_id_b64;
+    secrets.relay_psk = psk_b64;
+    store(app, &secrets)?;
+    Ok((pair_id, psk))
 }

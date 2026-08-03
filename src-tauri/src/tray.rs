@@ -6,8 +6,8 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
-use crate::state::{AppState, TunnelStatus};
-use crate::tunnel;
+use crate::state::{AppState, RelayStatus, TunnelStatus};
+use crate::{pairing, relay, tunnel};
 
 pub struct TrayItems {
     pub menu: Menu<Wry>,
@@ -19,6 +19,9 @@ pub struct TrayItems {
     pub copy_lan: MenuItem<Wry>,
     /// Whether the URL row is currently in the menu (only while running).
     url_shown: AtomicBool,
+
+    pub relay_status: MenuItem<Wry>,
+    pub relay_toggle: MenuItem<Wry>,
 }
 
 /// The `{ "url", "api_key" }` connection blob clients can consume.
@@ -50,6 +53,15 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
     )?;
     let toggle = MenuItem::with_id(app, "toggle", "Start Tunnel", true, None::<&str>)?;
     let copy_lan = MenuItem::with_id(app, "copy_lan", "Copy LAN URL", true, None::<&str>)?;
+
+    let relay_status = MenuItem::with_id(app, "relay_status", "Relay: disabled", false, None::<&str>)?;
+    let relay_toggle = MenuItem::with_id(app, "relay_toggle", "Connect Relay", true, None::<&str>)?;
+    // Opens the settings window — that's where the QR itself renders
+    // (a native tray menu item can't show an image); this just gets you
+    // there in one click instead of hunting for "Settings…".
+    let show_pairing_qr = MenuItem::with_id(app, "show_pairing_qr", "Show Pairing QR…", true, None::<&str>)?;
+    let copy_pairing_code = MenuItem::with_id(app, "copy_pairing_code", "Copy Pairing Code", true, None::<&str>)?;
+
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit amallo", true, None::<&str>)?;
 
@@ -58,6 +70,11 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
+            &relay_status,
+            &relay_toggle,
+            &show_pairing_qr,
+            &copy_pairing_code,
+            &PredefinedMenuItem::separator(app)?,
             &status,
             &PredefinedMenuItem::separator(app)?,
             &toggle,
@@ -82,6 +99,8 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
         toggle,
         copy_lan,
         url_shown: AtomicBool::new(false),
+        relay_status,
+        relay_toggle,
     });
 
     // macOS menu bar: solid white alpaca glyph. Other platforms use the app icon.
@@ -140,6 +159,24 @@ fn on_menu_event(app: &AppHandle<Wry>, id: &str) {
                 .unwrap_or_else(|_| "127.0.0.1".into());
             let _ = app.clipboard().write_text(format!("http://{ip}:{port}"));
         }
+        "relay_toggle" => {
+            let app = app.clone();
+            match state.relay_status() {
+                RelayStatus::Online | RelayStatus::Waiting | RelayStatus::Connecting => {
+                    relay::disconnect(&app);
+                }
+                _ => {
+                    let _ = relay::connect(&app);
+                }
+            }
+        }
+        "show_pairing_qr" => show_settings_window(app),
+        "copy_pairing_code" => {
+            if let Ok((pair_id, psk)) = pairing::get_or_create(app) {
+                let uri = pairing::encode_uri(&state.settings().relay_url, pair_id, psk);
+                let _ = app.clipboard().write_text(uri);
+            }
+        }
         "settings" => show_settings_window(app),
         "quit" => {
             let app = app.clone();
@@ -194,7 +231,10 @@ pub fn refresh(app: &AppHandle<Wry>, status: &TunnelStatus) {
         Some(url) => {
             let _ = items.url.set_text(url);
             if !items.url_shown.swap(true, Ordering::Relaxed) {
-                let _ = items.menu.insert(&items.url, 1);
+                // Index 6: relay_status, relay_toggle, show_pairing_qr,
+                // copy_pairing_code, separator, status — url goes right
+                // after status.
+                let _ = items.menu.insert(&items.url, 6);
             }
         }
         None => {
@@ -216,6 +256,26 @@ pub fn refresh(app: &AppHandle<Wry>, status: &TunnelStatus) {
             _ => format!("amallo — {status_text}"),
         }));
     }
+}
+
+/// Sync the relay tray rows with the relay connection status.
+pub fn refresh_relay(app: &AppHandle<Wry>, status: &RelayStatus) {
+    let state = app.state::<Arc<AppState>>();
+    let Some(items) = state.tray_items.get() else {
+        return;
+    };
+
+    let (status_text, toggle_text) = match status {
+        RelayStatus::Disabled => ("Relay: disabled".to_string(), "Connect Relay"),
+        RelayStatus::Connecting => ("Relay: connecting…".to_string(), "Disconnect Relay"),
+        RelayStatus::Waiting => ("Relay: waiting for a device…".to_string(), "Disconnect Relay"),
+        RelayStatus::Online => ("Relay: connected".to_string(), "Disconnect Relay"),
+        RelayStatus::Offline => ("Relay: offline, retrying…".to_string(), "Disconnect Relay"),
+        RelayStatus::Error { message } => (format!("Relay error: {message}"), "Connect Relay"),
+    };
+
+    let _ = items.relay_status.set_text(&status_text);
+    let _ = items.relay_toggle.set_text(toggle_text);
 }
 
 #[cfg(test)]

@@ -18,6 +18,24 @@ pub enum TunnelStatus {
     Error { message: String },
 }
 
+/// Mirrors web's `RelayState` (`connecting`/`waiting`/`online`/`offline`)
+/// with two amallo-specific additions: `Disabled` (not paired, or
+/// `auto_connect_relay` is off — never attempted a connection) and
+/// `Error` (a hard failure, e.g. a rejected pairing, distinct from the
+/// ordinary retry-with-backoff `Offline` state).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum RelayStatus {
+    Disabled,
+    Connecting,
+    /// Connected to the relay and past hello_ok, but no web peer has
+    /// attached to this pair yet.
+    Waiting,
+    Online,
+    Offline,
+    Error { message: String },
+}
+
 pub struct AppState {
     /// Bearer token the proxy expects. Kept in memory, persisted to `secrets.json`
     /// (0600) in the app data dir — see `secrets.rs`.
@@ -27,6 +45,8 @@ pub struct AppState {
     /// Active ngrok session/forwarder, if any.
     pub tunnel: tokio::sync::Mutex<Option<TunnelHandle>>,
     pub status: RwLock<TunnelStatus>,
+    /// Live relay connection status — see `relay::set_status`.
+    pub relay_status: RwLock<RelayStatus>,
     /// Handle of the running proxy server task (aborted on proxy restart).
     pub proxy_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Handle of the running relay connection supervisor (aborted and
@@ -56,6 +76,7 @@ impl AppState {
             settings: RwLock::new(settings),
             tunnel: tokio::sync::Mutex::new(None),
             status: RwLock::new(TunnelStatus::Stopped),
+            relay_status: RwLock::new(RelayStatus::Disabled),
             proxy_task: Mutex::new(None),
             relay_task: Mutex::new(None),
             router: OnceLock::new(),
@@ -66,6 +87,10 @@ impl AppState {
 
     pub fn status(&self) -> TunnelStatus {
         self.status.read().unwrap().clone()
+    }
+
+    pub fn relay_status(&self) -> RelayStatus {
+        self.relay_status.read().unwrap().clone()
     }
 
     pub fn bearer_token(&self) -> String {

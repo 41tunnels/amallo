@@ -1,9 +1,10 @@
 mod commands;
+mod pairing;
 mod proxy;
-mod relay;
+pub mod relay;
 mod secrets;
 mod settings;
-mod state;
+pub mod state;
 mod sync;
 mod tray;
 mod tunnel;
@@ -83,6 +84,12 @@ pub fn run() {
             commands::copy_to_clipboard,
             commands::get_autostart,
             commands::set_autostart,
+            commands::get_relay_status,
+            commands::get_pairing_code,
+            commands::get_pairing_qr,
+            commands::regenerate_pairing,
+            commands::connect_relay,
+            commands::disconnect_relay,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
