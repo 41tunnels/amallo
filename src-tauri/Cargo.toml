@@ -24,7 +24,18 @@ tauri-plugin-autostart = "2.5"
 ngrok = "0.19"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# net/io-util/sync/time declared explicitly rather than relying on
+# feature-unification from tauri/ngrok/reqwest — proxy.rs already uses
+# tokio::net::TcpListener and only compiles today because those other
+# crates happen to pull the feature in.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+# `ServiceExt::oneshot`, used to feed relay-originated requests into the
+# same axum Router the local proxy listener serves.
+tower = { version = "0.5", features = ["util"] }
+# Feeds a relay REQ's chunked body into an http::Request without buffering
+# it — the same streaming discipline the local proxy already uses via
+# reqwest's Body::wrap_stream.
+tokio-stream = { version = "0.1", features = ["sync"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
 rand = "0.9"
 subtle = "2"
@@ -34,6 +45,22 @@ serde_json = "1"
 futures-util = "0.3"
 local-ip-address = "0.6"
 rustls = "0.23"
+# wss:// support: rustls-tls-webpki-roots reuses the aws-lc-rs provider
+# already installed once in lib.rs's run(), rather than pulling in a second
+# TLS stack (ring) the way the plain "native-tls" feature would.
+tokio-tungstenite = { version = "0.26", default-features = false, features = [
+    "connect",
+    "rustls-tls-webpki-roots",
+] }
+# The E2E handshake and AEAD session (spec §4-§6): P-256 ECDH, HKDF-SHA256,
+# HMAC-SHA256, AES-256-GCM. Not a new crypto stack — aws-lc-rs is already
+# in the dependency tree as rustls's installed provider (see lib.rs); this
+# just adds the direct dependency needed to call its primitives from
+# application code instead of only through rustls's TLS-shaped API.
+aws-lc-rs = "1"
+# base64url encoding for the hello frame's pair_id (spec §3) — also needed
+# by the pairing URI in a later step, so this is the one place it's added.
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

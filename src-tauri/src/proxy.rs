@@ -137,7 +137,14 @@ async fn forward(State(ctx): State<ProxyCtx>, req: Request) -> Response {
     response
 }
 
-fn router(state: Arc<AppState>) -> Router {
+/// Builds the shared router — bearer auth, CORS, sync routes, and the
+/// catch-all Ollama forward. Called once and cached in
+/// `AppState.router` (see `respawn` below and `relay::respawn`): both the
+/// local proxy listener and the relay dispatcher serve requests through
+/// this exact router, so relay-originated requests get bearer auth (via
+/// amallo's own stamped token — see `relay::dispatch`), CORS, and Ollama
+/// forwarding for free, identically to a direct LAN connection.
+pub(crate) fn build_router(state: Arc<AppState>) -> Router {
     let ctx = ProxyCtx {
         state,
         client: reqwest::Client::builder()
@@ -198,7 +205,10 @@ pub fn respawn(app: &AppHandle<Wry>) -> Result<(), String> {
         task.abort();
     }
 
-    let router = router(state.clone());
+    let router = state
+        .router
+        .get_or_init(|| build_router(state.clone()))
+        .clone();
     let task = tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,
@@ -233,7 +243,7 @@ mod tests {
             Settings::default(),
             dir.path().to_path_buf(),
         ));
-        let router = router(state);
+        let router = build_router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

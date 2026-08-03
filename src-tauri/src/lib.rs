@@ -1,5 +1,6 @@
 mod commands;
 mod proxy;
+mod relay;
 mod secrets;
 mod settings;
 mod state;
@@ -47,6 +48,7 @@ pub fn run() {
             app.manage(Arc::new(AppState::new(bearer_token, settings, sync_dir)));
 
             proxy::respawn(app.handle())?;
+            relay::respawn(app.handle())?;
             tray::build(app.handle())?;
 
             // Menu-bar-only app: no Dock icon on macOS.

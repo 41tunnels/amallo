@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, RwLock};
 
+use axum::Router;
 use serde::Serialize;
 
 use crate::settings::Settings;
@@ -28,6 +29,20 @@ pub struct AppState {
     pub status: RwLock<TunnelStatus>,
     /// Handle of the running proxy server task (aborted on proxy restart).
     pub proxy_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// Handle of the running relay connection supervisor (aborted and
+    /// replaced by `relay::respawn`, mirroring `proxy_task`). Coexists
+    /// with `tunnel`/`status` (ngrok) until Step 12 removes ngrok
+    /// entirely — the two transports are independent until then.
+    pub relay_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// The shared axum router both the local proxy listener and the relay
+    /// dispatcher serve. Built once (see `proxy::build_router`) rather
+    /// than per-listener-restart: `proxy::respawn`'s previous behavior of
+    /// constructing a fresh `reqwest::Client` (and thus a fresh
+    /// connection pool) on every port/bind-setting change was already a
+    /// latent inefficiency; sharing one router with the relay path makes
+    /// that the same bug twice if left unfixed, so this fixes both at
+    /// once.
+    pub router: OnceLock<Router>,
     /// Menu item handles for live tray updates.
     pub tray_items: OnceLock<TrayItems>,
     /// Document store backing the `/amallo/sync/*` endpoints.
@@ -42,6 +57,8 @@ impl AppState {
             tunnel: tokio::sync::Mutex::new(None),
             status: RwLock::new(TunnelStatus::Stopped),
             proxy_task: Mutex::new(None),
+            relay_task: Mutex::new(None),
+            router: OnceLock::new(),
             tray_items: OnceLock::new(),
             sync: SyncStore::new(sync_dir),
         }
