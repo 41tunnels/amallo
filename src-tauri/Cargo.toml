@@ -21,6 +21,19 @@ name = "amallo_lib"
 # targets Android/iOS.
 crate-type = ["staticlib", "rlib"]
 
+[[bin]]
+name = "relay_smoke"
+path = "src/bin/relay_smoke.rs"
+required-features = ["relay-smoke"]
+
+[features]
+# Off by default so `cargo build`/`tauri build` never produces this binary —
+# it's a manual debugging tool (see relay_smoke.rs's doc comment), not part
+# of the app. Without this gate, tauri-cli's bin-selection has been observed
+# to bundle relay_smoke.exe as the app itself instead of the real "amallo"
+# binary. Run explicitly with `cargo run --bin relay_smoke --features relay-smoke`.
+relay-smoke = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
