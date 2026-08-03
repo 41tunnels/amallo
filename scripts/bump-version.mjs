@@ -36,14 +36,19 @@ const cargoToml = readFileSync(cargoTomlPath, 'utf8')
 // Anchored to the [package] section specifically, not a bare
 // `/^version = /` pattern — Cargo.toml's [dependencies] section is full
 // of other crates' own `version = "..."` lines.
-const updated = cargoToml.replace(
-  /(\[package\][\s\S]*?\nversion\s*=\s*)"[^"]*"/,
-  `$1"${version}"`
-)
-if (updated === cargoToml) {
+const versionFieldPattern = /(\[package\][\s\S]*?\nversion\s*=\s*)"[^"]*"/
+// Checked via .test() before replacing, not by comparing the before/after
+// strings — a before/after comparison is a false positive whenever the
+// target version happens to already be what's on disk (e.g. re-running
+// after a release's tag was deleted and recomputed to the same version):
+// the replace still matches and "succeeds", it just produces a string
+// identical to the input, which a before/after check would misreport as
+// "no match found".
+if (!versionFieldPattern.test(cargoToml)) {
   console.error(`could not find [package]'s version field in ${cargoTomlPath}`)
   process.exit(1)
 }
+const updated = cargoToml.replace(versionFieldPattern, `$1"${version}"`)
 writeFileSync(cargoTomlPath, updated)
 
 console.log(`bumped to ${version}`)
