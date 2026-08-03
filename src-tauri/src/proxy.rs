@@ -48,6 +48,19 @@ pub(crate) struct ProxyCtx {
     client: reqwest::Client,
 }
 
+/// Extract the bearer credential from an Authorization header value.
+/// Accepts any casing of the `Bearer` scheme (RFC 7235 is case-insensitive).
+fn bearer_credential(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let (scheme, rest) = value.split_once(|c: char| c.is_whitespace())?;
+    if scheme.eq_ignore_ascii_case("bearer") {
+        let token = rest.trim();
+        (!token.is_empty()).then_some(token)
+    } else {
+        None
+    }
+}
+
 /// Constant-time bearer token check. Every path requires auth so the public
 /// surface stays dark.
 async fn require_bearer(
@@ -55,31 +68,43 @@ async fn require_bearer(
     req: Request,
     next: Next,
 ) -> Response {
+    let method = req.method().clone();
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| "/".into());
     let expected = ctx.state.bearer_token();
-    let provided = req
+    let auth_header = req
         .headers()
         .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+        .and_then(|v| v.to_str().ok());
 
-    let ok = match provided {
-        Some(token) => {
-            token.len() == expected.len()
-                && token.as_bytes().ct_eq(expected.as_bytes()).into()
-        }
-        None => false,
+    let fail_reason = match auth_header {
+        None => Some("missing Authorization header"),
+        Some(raw) => match bearer_credential(raw) {
+            None => Some("Authorization is not a Bearer token"),
+            Some(token) if token.len() != expected.len() => {
+                Some("bearer token length mismatch")
+            }
+            Some(token) if !bool::from(token.as_bytes().ct_eq(expected.as_bytes())) => {
+                Some("bearer token mismatch")
+            }
+            Some(_) => None,
+        },
     };
 
-    if ok {
-        next.run(req).await
-    } else {
-        (
+    if let Some(reason) = fail_reason {
+        eprintln!("amallo: auth failed {method} {path} — {reason}");
+        return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
             "unauthorized\n",
         )
-            .into_response()
+            .into_response();
     }
+
+    next.run(req).await
 }
 
 fn copy_headers(src: &HeaderMap, skip: &[HeaderName]) -> HeaderMap {
@@ -98,8 +123,8 @@ async fn forward(State(ctx): State<ProxyCtx>, req: Request) -> Response {
     let path_and_query = req
         .uri()
         .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| "/".into());
     let url = format!("{OLLAMA_UPSTREAM}{path_and_query}");
 
     let method = req.method().clone();
@@ -108,7 +133,7 @@ async fn forward(State(ctx): State<ProxyCtx>, req: Request) -> Response {
 
     let upstream = ctx
         .client
-        .request(method, &url)
+        .request(method.clone(), &url)
         .headers(headers)
         .body(reqwest::Body::wrap_stream(body_stream))
         .send()
@@ -117,12 +142,19 @@ async fn forward(State(ctx): State<ProxyCtx>, req: Request) -> Response {
     let upstream = match upstream {
         Ok(resp) => resp,
         Err(e) => {
+            eprintln!("amallo: upstream failed {method} {path_and_query} — {e}");
             let msg = format!("amallo: could not reach Ollama at {OLLAMA_UPSTREAM}: {e}\n");
             return (StatusCode::BAD_GATEWAY, msg).into_response();
         }
     };
 
     let status = upstream.status();
+    if !status.is_success() {
+        eprintln!(
+            "amallo: upstream {status} {method} {path_and_query} (from {OLLAMA_UPSTREAM})"
+        );
+    }
+
     let mut response_headers = copy_headers(upstream.headers(), SKIP_RESPONSE_HEADERS);
     response_headers.insert(
         HeaderName::from_static("x-proxied-by"),
@@ -309,6 +341,25 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(ok.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // RFC 7235: auth scheme is case-insensitive.
+        let lower = client
+            .get(format!("{base}/api/tags"))
+            .header("Authorization", format!("bearer {TOKEN}"))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(lower.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn bearer_credential_parses_scheme_case_insensitively() {
+        assert_eq!(bearer_credential("Bearer abc"), Some("abc"));
+        assert_eq!(bearer_credential("bearer abc"), Some("abc"));
+        assert_eq!(bearer_credential("BEARER  abc  "), Some("abc"));
+        assert_eq!(bearer_credential("Basic abc"), None);
+        assert_eq!(bearer_credential("Bearer"), None);
+        assert_eq!(bearer_credential(""), None);
     }
 
     fn auth(client: reqwest::RequestBuilder) -> reqwest::RequestBuilder {

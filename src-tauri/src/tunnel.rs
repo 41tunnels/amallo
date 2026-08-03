@@ -104,12 +104,78 @@ pub async fn start(app: AppHandle<Wry>) {
             let url = forwarder.url().to_string();
             *guard = Some(TunnelHandle { session, forwarder });
             drop(guard);
-            set_status(&app, TunnelStatus::Running { url });
+            set_status(&app, TunnelStatus::Running { url: url.clone() });
+            // ngrok can accept the tunnel session even when the account has
+            // already burned its monthly request quota — those then 403 at the
+            // edge and never reach the local proxy. Probe once so the console
+            // (and future debugging) surfaces that clearly.
+            let token = state.bearer_token();
+            tauri::async_runtime::spawn(async move {
+                verify_public_url(&url, &token).await;
+            });
         }
         Err(message) => {
             drop(guard);
             set_status(&app, TunnelStatus::Error { message });
         }
+    }
+}
+
+/// Hit the public URL once and log if ngrok (or anything else) blocks us
+/// before the request reaches amallo.
+async fn verify_public_url(url: &str, token: &str) {
+    let probe = format!("{}/api/tags", url.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("amallo: could not build probe client: {e}");
+            return;
+        }
+    };
+
+    let response = match client
+        .get(&probe)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("ngrok-skip-browser-warning", "true")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("amallo: public URL probe failed — could not reach {probe}: {e}");
+            return;
+        }
+    };
+
+    let status = response.status();
+    if status.is_success() {
+        println!("amallo: public URL probe ok ({status})");
+        return;
+    }
+
+    let ngrok_code = response
+        .headers()
+        .get("ngrok-error-code")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = response.text().await.unwrap_or_default();
+    let body_hint = body.chars().take(200).collect::<String>().replace('\n', " ");
+
+    match ngrok_code.as_deref() {
+        Some("ERR_NGROK_727") => eprintln!(
+            "amallo: public URL returns {status} (ERR_NGROK_727) — ngrok monthly HTTP request \
+             limit reached; local proxy is fine, but clients hitting the tunnel will keep \
+             getting 403. See https://dashboard.ngrok.com/billing"
+        ),
+        Some(code) => eprintln!(
+            "amallo: public URL returns {status} ({code}) — request never reached the local proxy. body: {body_hint}"
+        ),
+        None => eprintln!(
+            "amallo: public URL returns {status} — probe of {probe} failed. body: {body_hint}"
+        ),
     }
 }
 
