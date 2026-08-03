@@ -9,7 +9,17 @@ repository = "https://github.com/OpenCharUI/amallo"
 
 [lib]
 name = "amallo_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# No "cdylib": Tauri's template default includes it for mobile targets
+# (Android JNI / iOS bridging), which this desktop-only menu-bar app has
+# never scaffolded (no gen/android or gen/ios). On this project's
+# x86_64-pc-windows-gnu toolchain, building a cdylib means GNU ld has to
+# emit a full DLL export table for the whole dependency graph — once
+# aws-lc-rs entered the tree, that table's symbol count exceeded a GNU ld
+# limit ("export ordinal too large"), which broke every `cargo build`
+# entirely, not just tests. Dropping cdylib removes the need for that
+# export table. Re-add it (and re-scaffold mobile targets) if amallo ever
+# targets Android/iOS.
+crate-type = ["staticlib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -58,9 +68,14 @@ tokio-tungstenite = { version = "0.26", default-features = false, features = [
 # just adds the direct dependency needed to call its primitives from
 # application code instead of only through rustls's TLS-shaped API.
 aws-lc-rs = "1"
-# base64url encoding for the hello frame's pair_id (spec §3) — also needed
-# by the pairing URI in a later step, so this is the one place it's added.
+# base64url encoding for the hello frame's pair_id (spec §3) and the
+# pairing URI's pair_id/PSK.
 base64 = "0.22"
+# Renders the pairing QR (spec §9). default-features = false + explicit
+# `svg` feature: the crate's default features also pull in raster-image
+# support (the `image` crate) that this never needs, since the PSK only
+# ever gets rendered as SVG, not decoded through an intermediate bitmap.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 tempfile = "3"
