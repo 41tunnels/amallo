@@ -2,19 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 interface Settings {
-  static_domain: string | null;
   proxy_port: number;
   bind_lan: boolean;
-  auto_start_tunnel: boolean;
   relay_url: string;
   auto_connect_relay: boolean;
 }
-
-type TunnelStatus =
-  | { state: "stopped" }
-  | { state: "connecting" }
-  | { state: "running"; url: string }
-  | { state: "error"; message: string };
 
 type RelayStatus =
   | { state: "disabled" }
@@ -27,16 +19,10 @@ type RelayStatus =
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 
-const ngrokToken = $<HTMLInputElement>("ngrok-token");
-const ngrokTokenState = $<HTMLSpanElement>("ngrok-token-state");
-const staticDomain = $<HTMLInputElement>("static-domain");
 const proxyPort = $<HTMLInputElement>("proxy-port");
 const bindLan = $<HTMLInputElement>("bind-lan");
 const bearerToken = $<HTMLInputElement>("bearer-token");
 const autostart = $<HTMLInputElement>("autostart");
-const autoStartTunnel = $<HTMLInputElement>("auto-start-tunnel");
-const statusEl = $<HTMLElement>("status");
-const toggleBtn = $<HTMLButtonElement>("toggle-tunnel");
 
 const pairingQr = $<HTMLDivElement>("pairing-qr");
 const pairingCode = $<HTMLInputElement>("pairing-code");
@@ -45,31 +31,7 @@ const autoConnectRelay = $<HTMLInputElement>("auto-connect-relay");
 const relayStatusEl = $<HTMLElement>("relay-status");
 const toggleRelayBtn = $<HTMLButtonElement>("toggle-relay");
 
-let currentStatus: TunnelStatus = { state: "stopped" };
 let currentRelayStatus: RelayStatus = { state: "disabled" };
-
-function renderStatus(status: TunnelStatus) {
-  currentStatus = status;
-  statusEl.className = `status ${status.state}`;
-  switch (status.state) {
-    case "stopped":
-      statusEl.textContent = "Tunnel: stopped";
-      toggleBtn.textContent = "Start Tunnel";
-      break;
-    case "connecting":
-      statusEl.textContent = "Tunnel: connecting…";
-      toggleBtn.textContent = "Stop Tunnel";
-      break;
-    case "running":
-      statusEl.textContent = `Online: ${status.url} (click to copy)`;
-      toggleBtn.textContent = "Stop Tunnel";
-      break;
-    case "error":
-      statusEl.textContent = `Error: ${status.message}`;
-      toggleBtn.textContent = "Start Tunnel";
-      break;
-  }
-}
 
 function renderRelayStatus(status: RelayStatus) {
   currentRelayStatus = status;
@@ -107,14 +69,6 @@ async function refreshPairing() {
   pairingQr.innerHTML = await invoke<string>("get_pairing_qr");
 }
 
-async function refreshNgrokTokenState() {
-  const hasToken = await invoke<boolean>("has_ngrok_token");
-  ngrokTokenState.textContent = hasToken ? "— saved ✓" : "— not set";
-  ngrokToken.placeholder = hasToken
-    ? "•••••••• (saved — paste to replace)"
-    : "paste your ngrok authtoken";
-}
-
 function flash(button: HTMLButtonElement, label: string) {
   const original = button.textContent;
   button.textContent = label;
@@ -123,23 +77,16 @@ function flash(button: HTMLButtonElement, label: string) {
 
 async function init() {
   const settings = await invoke<Settings>("get_settings");
-  staticDomain.value = settings.static_domain ?? "";
   proxyPort.value = String(settings.proxy_port);
   bindLan.checked = settings.bind_lan;
-  autoStartTunnel.checked = settings.auto_start_tunnel;
   relayUrl.value = settings.relay_url;
   autoConnectRelay.checked = settings.auto_connect_relay;
 
   bearerToken.value = await invoke<string>("get_bearer_token");
   autostart.checked = await invoke<boolean>("get_autostart").catch(() => false);
-  renderStatus(await invoke<TunnelStatus>("get_status"));
   renderRelayStatus(await invoke<RelayStatus>("get_relay_status"));
-  await refreshNgrokTokenState();
   await refreshPairing();
 
-  await listen<TunnelStatus>("tunnel-status", (event) =>
-    renderStatus(event.payload),
-  );
   await listen<RelayStatus>("relay-status", (event) =>
     renderRelayStatus(event.payload),
   );
@@ -168,10 +115,8 @@ function markSaved(el: HTMLElement) {
 
 async function persistSettings(changed: HTMLElement) {
   const newSettings: Settings = {
-    static_domain: staticDomain.value.trim() || null,
     proxy_port: Math.min(65535, Math.max(1024, Number(proxyPort.value) || 11435)),
     bind_lan: bindLan.checked,
-    auto_start_tunnel: autoStartTunnel.checked,
     relay_url: relayUrl.value.trim(),
     auto_connect_relay: autoConnectRelay.checked,
   };
@@ -184,41 +129,13 @@ async function persistSettings(changed: HTMLElement) {
   if (changed === relayUrl) await refreshPairing();
 }
 
-for (const el of [staticDomain, proxyPort, bindLan, autoStartTunnel, relayUrl, autoConnectRelay]) {
+for (const el of [proxyPort, bindLan, relayUrl, autoConnectRelay]) {
   el.addEventListener("change", () => persistSettings(el));
 }
-
-// The authtoken is write-only: save it on change only when something was typed,
-// then clear the field and reflect the saved state.
-ngrokToken.addEventListener("change", async () => {
-  if (!ngrokToken.value) return;
-  await invoke("set_ngrok_token", { token: ngrokToken.value });
-  ngrokToken.value = "";
-  await refreshNgrokTokenState();
-  markSaved(ngrokTokenState);
-});
 
 autostart.addEventListener("change", async () => {
   await invoke("set_autostart", { enabled: autostart.checked }).catch(() => {});
   markSaved(autostart);
-});
-
-toggleBtn.addEventListener("click", async () => {
-  if (
-    currentStatus.state === "running" ||
-    currentStatus.state === "connecting"
-  ) {
-    await invoke("stop_tunnel");
-  } else {
-    // Fire and forget: status updates arrive via the tunnel-status event.
-    invoke("start_tunnel");
-  }
-});
-
-statusEl.addEventListener("click", async () => {
-  if (currentStatus.state === "running") {
-    await invoke("copy_to_clipboard", { text: currentStatus.url });
-  }
 });
 
 $<HTMLButtonElement>("copy-pairing-code").addEventListener("click", async (e) => {

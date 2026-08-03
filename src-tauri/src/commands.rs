@@ -5,8 +5,8 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::settings::Settings;
-use crate::state::{AppState, RelayStatus, TunnelStatus};
-use crate::{pairing, proxy, relay, secrets, settings, tray, tunnel};
+use crate::state::{AppState, RelayStatus};
+use crate::{pairing, proxy, relay, secrets, settings, tray};
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -31,18 +31,9 @@ pub fn save_settings(
     if old.relay_url != new_settings.relay_url || old.auto_connect_relay != new_settings.auto_connect_relay {
         relay::respawn(&app)?;
     }
-    tray::refresh(&app, &state.status());
+    // Refreshes "Copy LAN URL"'s enabled state too, which tracks bind_lan.
+    tray::refresh_relay(&app, &state.relay_status());
     Ok(())
-}
-
-#[tauri::command]
-pub fn set_ngrok_token(app: AppHandle<Wry>, token: String) -> Result<(), String> {
-    secrets::set_ngrok_token(&app, token.trim())
-}
-
-#[tauri::command]
-pub fn has_ngrok_token(app: AppHandle<Wry>) -> Result<bool, String> {
-    Ok(secrets::get_ngrok_token(&app)?.is_some())
 }
 
 #[tauri::command]
@@ -58,21 +49,6 @@ pub fn regenerate_bearer_token(
     let token = secrets::regenerate_bearer_token(&app)?;
     *state.bearer_token.write().unwrap() = token.clone();
     Ok(token)
-}
-
-#[tauri::command]
-pub fn get_status(state: State<'_, Arc<AppState>>) -> TunnelStatus {
-    state.status()
-}
-
-#[tauri::command]
-pub async fn start_tunnel(app: AppHandle<Wry>) {
-    tunnel::start(app).await;
-}
-
-#[tauri::command]
-pub async fn stop_tunnel(app: AppHandle<Wry>) {
-    tunnel::stop(app).await;
 }
 
 #[tauri::command]

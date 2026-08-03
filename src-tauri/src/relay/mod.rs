@@ -36,7 +36,7 @@ const BACKOFF_CAP: Duration = Duration::from_secs(30);
 const BACKOFF_RESET_AFTER: Duration = Duration::from_secs(60);
 
 /// Updates relay status everywhere at once: state, tray menu, settings
-/// window — mirrors `tunnel::set_status`.
+/// window.
 pub(crate) fn set_status(app: &AppHandle<Wry>, status: RelayStatus) {
     if let RelayStatus::Error { message } = &status {
         eprintln!("amallo: relay: error: {message}");
@@ -74,7 +74,7 @@ pub fn respawn(app: &AppHandle<Wry>) -> Result<(), String> {
 /// Forces a connection attempt regardless of `auto_connect_relay` —
 /// backs the tray/settings "Connect Relay" action. Does not change the
 /// persisted setting; "connect automatically on launch" is the separate
-/// checkbox (mirrors the ngrok tunnel start/`auto_start_tunnel` split).
+/// checkbox.
 pub fn connect(app: &AppHandle<Wry>) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>().inner().clone();
     if let Some(task) = state.relay_task.lock().unwrap().take() {

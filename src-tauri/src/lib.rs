@@ -7,7 +7,6 @@ mod settings;
 pub mod state;
 mod sync;
 mod tray;
-mod tunnel;
 
 use std::sync::Arc;
 
@@ -18,8 +17,11 @@ use crate::state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Both reqwest (aws-lc-rs) and ngrok (ring) pull in a rustls crypto
-    // provider, so rustls can't auto-select one — install it explicitly.
+    // reqwest and the relay's E2E crypto both use aws-lc-rs; rustls still
+    // can't auto-select a provider when more than one crate in the tree
+    // could supply one, so this stays as a guarantee against that even
+    // though ngrok (the one dependency that used to pull in a competing
+    // `ring` provider) is gone.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tauri::Builder::default()
@@ -38,7 +40,6 @@ pub fn run() {
             let bearer_token = secrets::get_or_create_bearer_token(app.handle())
                 .map_err(|e| format!("failed to load secrets: {e}"))?;
             let settings = settings::load(app.handle());
-            let auto_start_tunnel = settings.auto_start_tunnel;
 
             let sync_dir = app
                 .path()
@@ -56,12 +57,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            if auto_start_tunnel {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tunnel::start(handle).await;
-                });
-            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -74,13 +69,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::save_settings,
-            commands::set_ngrok_token,
-            commands::has_ngrok_token,
             commands::get_bearer_token,
             commands::regenerate_bearer_token,
-            commands::get_status,
-            commands::start_tunnel,
-            commands::stop_tunnel,
             commands::copy_to_clipboard,
             commands::get_autostart,
             commands::set_autostart,

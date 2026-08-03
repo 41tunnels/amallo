@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -8,12 +7,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Wry};
 
 /// Secrets are kept in a single JSON file in amallo's data dir, locked to the
-/// current user with `0600` permissions (the same approach ngrok, the AWS CLI
-/// and Docker use for their tokens). Not encrypted at rest — see the README.
+/// current user with `0600` permissions (the same approach the AWS CLI and
+/// Docker use for their tokens). Not encrypted at rest — see the README.
 #[derive(Default, Serialize, Deserialize)]
 struct SecretFile {
-    #[serde(default)]
-    ngrok_authtoken: Option<String>,
     #[serde(default)]
     bearer_token: String,
     /// Relay pairing material (spec §3, §4.2): a 16-byte pair_id and a
@@ -58,6 +55,7 @@ fn store(app: &AppHandle<Wry>, secrets: &SecretFile) -> Result<(), String> {
 fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -85,16 +83,6 @@ fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-pub fn get_ngrok_token(app: &AppHandle<Wry>) -> Result<Option<String>, String> {
-    Ok(load(app)?.ngrok_authtoken.filter(|t| !t.is_empty()))
-}
-
-pub fn set_ngrok_token(app: &AppHandle<Wry>, token: &str) -> Result<(), String> {
-    let mut secrets = load(app)?;
-    secrets.ngrok_authtoken = (!token.is_empty()).then(|| token.to_string());
-    store(app, &secrets)
 }
 
 /// Load the proxy bearer token, generating and persisting one on first launch.

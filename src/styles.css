@@ -166,20 +166,14 @@ button.primary {
   overflow-wrap: anywhere;
 }
 
-.status.stopped {
-  background: color-mix(in srgb, var(--muted) 15%, transparent);
-  color: var(--muted);
-}
-
 .status.connecting {
   background: color-mix(in srgb, var(--warn) 18%, transparent);
   color: var(--warn);
 }
 
-.status.running {
+.status.online {
   background: color-mix(in srgb, var(--ok) 18%, transparent);
   color: var(--ok);
-  cursor: pointer;
 }
 
 .status.error {

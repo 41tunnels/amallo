@@ -163,11 +163,7 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers([
-            header::AUTHORIZATION,
-            header::CONTENT_TYPE,
-            HeaderName::from_static("ngrok-skip-browser-warning"),
-        ]);
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     // amallo-native document sync. Explicit routes take precedence over the
     // catch-all `forward`, and `/amallo/*` cannot collide with Ollama's `/api/*`
@@ -277,7 +273,6 @@ mod tests {
             .unwrap()
             .to_ascii_lowercase();
         assert!(allow_headers.contains("authorization"));
-        assert!(allow_headers.contains("ngrok-skip-browser-warning"));
     }
 
     #[tokio::test]

@@ -17,10 +17,8 @@ use rand::RngCore;
 
 #[tokio::main]
 async fn main() {
-    // Mirrors lib.rs's run(): both aws-lc-rs (reqwest, this crypto path)
-    // and ring (ngrok) are in the dependency tree, so rustls can't
-    // auto-select a provider — install one explicitly before anything
-    // touches TLS.
+    // Mirrors lib.rs's run() — rustls can't auto-select a crypto provider
+    // on its own, so install one explicitly before anything touches TLS.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let relay_url = std::env::args()

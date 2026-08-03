@@ -7,16 +7,6 @@ use serde::Serialize;
 use crate::settings::Settings;
 use crate::sync::SyncStore;
 use crate::tray::TrayItems;
-use crate::tunnel::TunnelHandle;
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(tag = "state", rename_all = "lowercase")]
-pub enum TunnelStatus {
-    Stopped,
-    Connecting,
-    Running { url: String },
-    Error { message: String },
-}
 
 /// Mirrors web's `RelayState` (`connecting`/`waiting`/`online`/`offline`)
 /// with two amallo-specific additions: `Disabled` (not paired, or
@@ -42,17 +32,12 @@ pub struct AppState {
     pub bearer_token: RwLock<String>,
     /// Non-secret settings, persisted via tauri-plugin-store.
     pub settings: RwLock<Settings>,
-    /// Active ngrok session/forwarder, if any.
-    pub tunnel: tokio::sync::Mutex<Option<TunnelHandle>>,
-    pub status: RwLock<TunnelStatus>,
     /// Live relay connection status — see `relay::set_status`.
     pub relay_status: RwLock<RelayStatus>,
     /// Handle of the running proxy server task (aborted on proxy restart).
     pub proxy_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Handle of the running relay connection supervisor (aborted and
-    /// replaced by `relay::respawn`, mirroring `proxy_task`). Coexists
-    /// with `tunnel`/`status` (ngrok) until Step 12 removes ngrok
-    /// entirely — the two transports are independent until then.
+    /// replaced by `relay::respawn`).
     pub relay_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// The shared axum router both the local proxy listener and the relay
     /// dispatcher serve. Built once (see `proxy::build_router`) rather
@@ -74,8 +59,6 @@ impl AppState {
         Self {
             bearer_token: RwLock::new(bearer_token),
             settings: RwLock::new(settings),
-            tunnel: tokio::sync::Mutex::new(None),
-            status: RwLock::new(TunnelStatus::Stopped),
             relay_status: RwLock::new(RelayStatus::Disabled),
             proxy_task: Mutex::new(None),
             relay_task: Mutex::new(None),
@@ -83,10 +66,6 @@ impl AppState {
             tray_items: OnceLock::new(),
             sync: SyncStore::new(sync_dir),
         }
-    }
-
-    pub fn status(&self) -> TunnelStatus {
-        self.status.read().unwrap().clone()
     }
 
     pub fn relay_status(&self) -> RelayStatus {
