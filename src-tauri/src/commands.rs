@@ -5,8 +5,8 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::settings::Settings;
-use crate::state::{AppState, TunnelStatus};
-use crate::{proxy, secrets, settings, tray, tunnel};
+use crate::state::{AppState, RelayStatus};
+use crate::{pairing, proxy, relay, secrets, settings, tray};
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -27,18 +27,13 @@ pub fn save_settings(
     if old.proxy_port != new_settings.proxy_port || old.bind_lan != new_settings.bind_lan {
         proxy::respawn(&app)?;
     }
-    tray::refresh(&app, &state.status());
+    // Reconnect the relay if its target or auto-connect preference changed.
+    if old.relay_url != new_settings.relay_url || old.auto_connect_relay != new_settings.auto_connect_relay {
+        relay::respawn(&app)?;
+    }
+    // Refreshes "Copy LAN URL"'s enabled state too, which tracks bind_lan.
+    tray::refresh_relay(&app, &state.relay_status());
     Ok(())
-}
-
-#[tauri::command]
-pub fn set_ngrok_token(app: AppHandle<Wry>, token: String) -> Result<(), String> {
-    secrets::set_ngrok_token(&app, token.trim())
-}
-
-#[tauri::command]
-pub fn has_ngrok_token(app: AppHandle<Wry>) -> Result<bool, String> {
-    Ok(secrets::get_ngrok_token(&app)?.is_some())
 }
 
 #[tauri::command]
@@ -54,21 +49,6 @@ pub fn regenerate_bearer_token(
     let token = secrets::regenerate_bearer_token(&app)?;
     *state.bearer_token.write().unwrap() = token.clone();
     Ok(token)
-}
-
-#[tauri::command]
-pub fn get_status(state: State<'_, Arc<AppState>>) -> TunnelStatus {
-    state.status()
-}
-
-#[tauri::command]
-pub async fn start_tunnel(app: AppHandle<Wry>) {
-    tunnel::start(app).await;
-}
-
-#[tauri::command]
-pub async fn stop_tunnel(app: AppHandle<Wry>) {
-    tunnel::stop(app).await;
 }
 
 #[tauri::command]
@@ -89,4 +69,43 @@ pub fn set_autostart(app: AppHandle<Wry>, enabled: bool) -> Result<(), String> {
     } else {
         autolaunch.disable().map_err(|e| e.to_string())
     }
+}
+
+#[tauri::command]
+pub fn get_relay_status(state: State<'_, Arc<AppState>>) -> RelayStatus {
+    state.relay_status()
+}
+
+#[tauri::command]
+pub fn get_pairing_code(app: AppHandle<Wry>, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let (pair_id, psk) = pairing::get_or_create(&app)?;
+    Ok(pairing::encode_uri(&state.settings().relay_url, pair_id, psk))
+}
+
+#[tauri::command]
+pub fn get_pairing_qr(app: AppHandle<Wry>, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let (pair_id, psk) = pairing::get_or_create(&app)?;
+    let uri = pairing::encode_uri(&state.settings().relay_url, pair_id, psk);
+    pairing::render_qr_svg(&uri)
+}
+
+/// Replaces the pairing material and reconnects immediately — every
+/// device paired with the old code loses access at once rather than
+/// waiting for the next natural reconnect.
+#[tauri::command]
+pub fn regenerate_pairing(app: AppHandle<Wry>, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let (pair_id, psk) = pairing::regenerate(&app)?;
+    let uri = pairing::encode_uri(&state.settings().relay_url, pair_id, psk);
+    relay::respawn(&app)?;
+    Ok(uri)
+}
+
+#[tauri::command]
+pub fn connect_relay(app: AppHandle<Wry>) -> Result<(), String> {
+    relay::connect(&app)
+}
+
+#[tauri::command]
+pub fn disconnect_relay(app: AppHandle<Wry>) {
+    relay::disconnect(&app);
 }

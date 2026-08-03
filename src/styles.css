@@ -166,25 +166,56 @@ button.primary {
   overflow-wrap: anywhere;
 }
 
-.status.stopped {
-  background: color-mix(in srgb, var(--muted) 15%, transparent);
-  color: var(--muted);
-}
-
 .status.connecting {
   background: color-mix(in srgb, var(--warn) 18%, transparent);
   color: var(--warn);
 }
 
-.status.running {
+.status.online {
   background: color-mix(in srgb, var(--ok) 18%, transparent);
   color: var(--ok);
-  cursor: pointer;
 }
 
 .status.error {
   background: color-mix(in srgb, var(--err) 18%, transparent);
   color: var(--err);
+}
+
+.status.disabled {
+  background: color-mix(in srgb, var(--muted) 15%, transparent);
+  color: var(--muted);
+}
+
+.status.waiting {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+
+.status.offline {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+
+.qr-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+/* Always white-on-white regardless of theme: a QR scanner needs real
+   contrast between the modules and the quiet zone, and inverting a QR
+   code (dark mode's usual "flip everything") makes most scanners fail. */
+.qr {
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 12px;
+  width: 176px;
+  height: 176px;
+}
+
+.qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .autosave-hint {

@@ -2,12 +2,57 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [release/latest]
   workflow_dispatch:
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  # Analyzes commits since the last release (conventional commits: feat →
+  # minor, fix → patch, "BREAKING CHANGE"/"!" → major); if one is
+  # warranted, bumps package.json/tauri.conf.json/Cargo.toml, commits and
+  # tags that, and publishes the GitHub release with generated notes —
+  # no binaries yet, those come from the build job below.
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      published: ${{ steps.semantic.outputs.new_release_published }}
+      version: ${{ steps.semantic.outputs.new_release_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # semantic-release needs the full commit/tag history to find
+          # the previous release and analyze everything since it — the
+          # default shallow clone only has the latest commit.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Semantic release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/exec
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Builds the desktop bundles and attaches them to the release the job
+  # above just published — tauri-action finds that existing release by
+  # tag rather than creating a second one (see tauri-action's docs on
+  # `tagName`). Only runs when a release actually happened: most pushes
+  # to release/latest (docs, chores, non-release-worthy fixes) publish
+  # nothing.
   build:
+    needs: release
+    if: needs.release.outputs.published == 'true'
     permissions:
       contents: write
     strategy:
@@ -24,6 +69,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: v${{ needs.release.outputs.version }}
 
       - name: Setup node
         uses: actions/setup-node@v5
@@ -43,14 +90,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and release
+      - name: Build and upload to the release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: "amallo ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install."
-          releaseDraft: true
-          prerelease: false
+          tagName: v${{ needs.release.outputs.version }}
           args: ${{ matrix.args }}

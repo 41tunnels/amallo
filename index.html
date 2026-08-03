@@ -16,26 +16,32 @@
       </header>
 
       <section class="card">
-        <h2>ngrok</h2>
-        <label for="ngrok-token">
-          Authtoken
-          <span id="ngrok-token-state" class="hint"></span>
-        </label>
-        <input
-          id="ngrok-token"
-          type="password"
-          placeholder="paste your ngrok authtoken"
-          autocomplete="off"
-        />
+        <h2>Pairing</h2>
+        <p class="hint">
+          Scan this from OpenCharUI web (Settings → Remote access) to chat with Ollama from
+          anywhere — no network setup required.
+        </p>
+        <div class="qr-wrap">
+          <div id="pairing-qr" class="qr"></div>
+        </div>
 
-        <label for="static-domain">Static domain <span class="hint">(optional — leave empty for a random URL)</span></label>
-        <input
-          id="static-domain"
-          type="text"
-          placeholder="my-name.ngrok-free.app"
-          autocomplete="off"
-          spellcheck="false"
-        />
+        <label for="pairing-code">Pairing code <span class="hint">(or paste this instead of scanning)</span></label>
+        <div class="row">
+          <input id="pairing-code" type="text" readonly />
+          <button id="copy-pairing-code" type="button">Copy</button>
+          <button id="regen-pairing" type="button" title="Invalidates every paired device">↻</button>
+        </div>
+
+        <label for="relay-url">Relay URL <span class="hint">(advanced — leave default unless self-hosting)</span></label>
+        <input id="relay-url" type="text" spellcheck="false" />
+
+        <label class="checkbox">
+          <input id="auto-connect-relay" type="checkbox" />
+          Connect to the relay automatically on launch
+        </label>
+
+        <footer id="relay-status" class="status disabled">Relay: disabled</footer>
+        <button id="toggle-relay" type="button">Connect Relay</button>
       </section>
 
       <section class="card">
@@ -63,17 +69,8 @@
           <input id="autostart" type="checkbox" />
           Launch amallo at login
         </label>
-        <label class="checkbox">
-          <input id="auto-start-tunnel" type="checkbox" />
-          Start tunnel automatically on launch
-        </label>
       </section>
 
-      <div class="actions">
-        <button id="toggle-tunnel" type="button" class="primary">Start Tunnel</button>
-      </div>
-
-      <footer id="status" class="status stopped">Tunnel: stopped</footer>
       <p class="autosave-hint">Changes are saved automatically.</p>
     </main>
   </body>
