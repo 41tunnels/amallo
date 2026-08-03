@@ -97,3 +97,6 @@ jobs:
         with:
           tagName: v${{ needs.release.outputs.version }}
           args: ${{ matrix.args }}
+          # Includes [arch] (not just [platform]) so the two macOS matrix
+          # legs (arm64/intel) don't upload conflicting asset names.
+          assetNamePattern: "[name]_[platform]_[arch]_[version][setup].[ext]"
