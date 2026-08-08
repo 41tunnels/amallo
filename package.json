@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.2.0",
   "description": "Securely use the AI models on your own computer from anywhere.",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "AGPL-3.0-or-later",
   "repository": "https://github.com/OpenCharUI/amallo",
   "type": "module",
   "scripts": {
