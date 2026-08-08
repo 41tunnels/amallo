@@ -6,6 +6,7 @@ authors = ["tehfonsi <7488280+tehfonsi@users.noreply.github.com>"]
 edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/OpenCharUI/amallo"
+default-run = "amallo"
 
 [lib]
 name = "amallo_lib"
