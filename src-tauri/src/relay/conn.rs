@@ -200,22 +200,32 @@ async fn expect_handshake<S>(read: &mut S) -> Result<Vec<u8>, String>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
-    let msg = read
-        .next()
-        .await
-        .ok_or_else(|| "connection closed during handshake".to_string())?
-        .map_err(|e| format!("read handshake frame: {e}"))?;
-    let Message::Binary(data) = msg else {
-        return Err("expected a binary message for a handshake frame".to_string());
-    };
-    let (hdr, payload) = wire::parse_outer(&data).map_err(|e| e.to_string())?;
-    if hdr.channel != wire::CHANNEL_HANDSHAKE {
-        return Err(format!(
-            "expected handshake channel during handshake, got 0x{:02x}",
-            hdr.channel.0
-        ));
+    loop {
+        let msg = read
+            .next()
+            .await
+            .ok_or_else(|| "connection closed during handshake".to_string())?
+            .map_err(|e| format!("read handshake frame: {e}"))?;
+        let data = match msg {
+            Message::Binary(data) => data,
+            // Relay-side WebSocket pings arrive on this schedule too (spec
+            // §7's 30s ping) — same tolerance as the post-handshake reader
+            // (`run_reader_secure`), just applied here too.
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            Message::Close(_) => return Err("connection closed during handshake".to_string()),
+            Message::Text(_) => {
+                return Err("received a text frame; the relay protocol is binary-only".to_string())
+            }
+        };
+        let (hdr, payload) = wire::parse_outer(&data).map_err(|e| e.to_string())?;
+        if hdr.channel != wire::CHANNEL_HANDSHAKE {
+            return Err(format!(
+                "expected handshake channel during handshake, got 0x{:02x}",
+                hdr.channel.0
+            ));
+        }
+        return Ok(payload.to_vec());
     }
-    Ok(payload.to_vec())
 }
 
 enum ControlOutcome {
@@ -237,8 +247,19 @@ where
             .await
             .ok_or_else(|| format!("connection closed before {want_type}"))?
             .map_err(|e| format!("read {want_type}: {e}"))?;
-        let Message::Binary(data) = msg else {
-            return Err(format!("expected a binary message for {want_type}"));
+        let data = match msg {
+            Message::Binary(data) => data,
+            // The relay pings every ~30s (spec §7) while an agent waits
+            // for a peer to attach, which is routinely longer than that —
+            // tokio-tungstenite surfaces the ping/pong as a Message
+            // variant here rather than swallowing it, so it must be
+            // tolerated the same way the post-handshake reader already
+            // does, instead of treated as a protocol error.
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            Message::Close(_) => return Err(format!("connection closed before {want_type}")),
+            Message::Text(_) => {
+                return Err("received a text frame; the relay protocol is binary-only".to_string())
+            }
         };
         let (hdr, payload) = wire::parse_outer(&data).map_err(|e| e.to_string())?;
         if hdr.channel != wire::CHANNEL_CONTROL {
@@ -408,26 +429,33 @@ async fn expect_control<S>(read: &mut S, want_type: &str) -> Result<(), String>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
-    let msg = read
-        .next()
-        .await
-        .ok_or_else(|| "connection closed before hello_ok".to_string())?
-        .map_err(|e| format!("read hello_ok: {e}"))?;
-    let Message::Binary(data) = msg else {
-        return Err("expected a binary message for hello_ok".to_string());
-    };
-    let (hdr, payload) = wire::parse_outer(&data).map_err(|e| e.to_string())?;
-    if hdr.channel != wire::CHANNEL_CONTROL {
-        return Err(format!(
-            "expected control channel for hello_ok, got 0x{:02x}",
-            hdr.channel.0
-        ));
+    loop {
+        let msg = read
+            .next()
+            .await
+            .ok_or_else(|| "connection closed before hello_ok".to_string())?
+            .map_err(|e| format!("read hello_ok: {e}"))?;
+        let data = match msg {
+            Message::Binary(data) => data,
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            Message::Close(_) => return Err("connection closed before hello_ok".to_string()),
+            Message::Text(_) => {
+                return Err("received a text frame; the relay protocol is binary-only".to_string())
+            }
+        };
+        let (hdr, payload) = wire::parse_outer(&data).map_err(|e| e.to_string())?;
+        if hdr.channel != wire::CHANNEL_CONTROL {
+            return Err(format!(
+                "expected control channel for hello_ok, got 0x{:02x}",
+                hdr.channel.0
+            ));
+        }
+        let msg: ControlMsg = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        if msg.t != want_type {
+            return Err(format!("expected control {want_type:?}, got {:?}", msg.t));
+        }
+        return Ok(());
     }
-    let msg: ControlMsg = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-    if msg.t != want_type {
-        return Err(format!("expected control {want_type:?}, got {:?}", msg.t));
-    }
-    Ok(())
 }
 
 /// Owns the WebSocket sink exclusively — the single writer for this
