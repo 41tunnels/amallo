@@ -21,6 +21,8 @@ const $ = <T extends HTMLElement>(id: string) =>
 
 const proxyPort = $<HTMLInputElement>("proxy-port");
 const bindLan = $<HTMLInputElement>("bind-lan");
+const lanUrlRow = $<HTMLDivElement>("lan-url-row");
+const lanUrl = $<HTMLInputElement>("lan-url");
 const bearerToken = $<HTMLInputElement>("bearer-token");
 const autostart = $<HTMLInputElement>("autostart");
 
@@ -75,6 +77,13 @@ function flash(button: HTMLButtonElement, label: string) {
   setTimeout(() => (button.textContent = original), 1200);
 }
 
+async function refreshLanUrl() {
+  lanUrlRow.hidden = !bindLan.checked;
+  if (bindLan.checked) {
+    lanUrl.value = await invoke<string>("get_lan_url");
+  }
+}
+
 async function init() {
   const settings = await invoke<Settings>("get_settings");
   proxyPort.value = String(settings.proxy_port);
@@ -82,6 +91,7 @@ async function init() {
   relayUrl.value = settings.relay_url;
   autoConnectRelay.checked = settings.auto_connect_relay;
 
+  await refreshLanUrl();
   bearerToken.value = await invoke<string>("get_bearer_token");
   autostart.checked = await invoke<boolean>("get_autostart").catch(() => false);
   renderRelayStatus(await invoke<RelayStatus>("get_relay_status"));
@@ -91,6 +101,11 @@ async function init() {
     renderRelayStatus(event.payload),
   );
 }
+
+$<HTMLButtonElement>("copy-lan-url").addEventListener("click", async (e) => {
+  await invoke("copy_to_clipboard", { text: lanUrl.value });
+  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+});
 
 $<HTMLButtonElement>("copy-bearer").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: bearerToken.value });
@@ -127,6 +142,7 @@ async function persistSettings(changed: HTMLElement) {
   // The pairing code/QR embed the relay URL — regenerate the displayed
   // one so it doesn't silently point a scanned code at the old relay.
   if (changed === relayUrl) await refreshPairing();
+  if (changed === bindLan || changed === proxyPort) await refreshLanUrl();
 }
 
 for (const el of [proxyPort, bindLan, relayUrl, autoConnectRelay]) {

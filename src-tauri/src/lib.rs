@@ -1,10 +1,13 @@
+mod api;
 mod commands;
+mod ollama;
 mod pairing;
 mod proxy;
 pub mod relay;
 mod secrets;
 mod settings;
 pub mod state;
+pub mod store;
 mod sync;
 mod tray;
 
@@ -41,17 +44,24 @@ pub fn run() {
                 .map_err(|e| format!("failed to load secrets: {e}"))?;
             let settings = settings::load(app.handle());
 
-            let sync_dir = app
+            let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .map_err(|e| format!("could not resolve app data dir: {e}"))?
-                .join("sync");
+                .map_err(|e| format!("could not resolve app data dir: {e}"))?;
 
-            app.manage(Arc::new(AppState::new(bearer_token, settings, sync_dir)));
+            let state = Arc::new(
+                AppState::new(bearer_token, settings, app_data_dir)
+                    .map_err(|e| format!("failed to open store: {e}"))?,
+            );
+            api::v1::spawn_maintenance(state.clone());
+            app.manage(state);
 
             proxy::respawn(app.handle())?;
             relay::respawn(app.handle())?;
             tray::build(app.handle())?;
+            // After the tray exists: the first probe result lands on the
+            // menu rows built above.
+            ollama::spawn_monitor(app.handle());
 
             // Menu-bar-only app: no Dock icon on macOS.
             #[cfg(target_os = "macos")]
@@ -70,6 +80,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::get_bearer_token,
+            commands::get_lan_url,
             commands::regenerate_bearer_token,
             commands::copy_to_clipboard,
             commands::get_autostart,

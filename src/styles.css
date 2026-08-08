@@ -203,13 +203,14 @@ button.primary {
 
 /* Always white-on-white regardless of theme: a QR scanner needs real
    contrast between the modules and the quiet zone, and inverting a QR
-   code (dark mode's usual "flip everything") makes most scanners fail. */
+   code (dark mode's usual "flip everything") makes most scanners fail.
+   aspect-ratio keeps it square while width stretches to fill the card. */
 .qr {
   background: #ffffff;
   border-radius: 8px;
   padding: 12px;
-  width: 176px;
-  height: 176px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
 }
 
 .qr svg {

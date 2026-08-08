@@ -15,7 +15,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::state::AppState;
 
-const OLLAMA_UPSTREAM: &str = "http://127.0.0.1:11434";
+pub(crate) const OLLAMA_UPSTREAM: &str = "http://127.0.0.1:11434";
 
 /// Headers that must not be forwarded in either direction (hop-by-hop), plus
 /// the ones Ollama trips over: `Host`/`Origin` make its allowed-host and CORS
@@ -197,10 +197,13 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .allow_methods(Any)
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
-    // amallo-native document sync. Explicit routes take precedence over the
-    // catch-all `forward`, and `/amallo/*` cannot collide with Ollama's `/api/*`
-    // or `/v1/*`. The larger body limit (avatar batches) applies to this route
-    // only; the streaming fallback keeps axum's default.
+    // amallo-native document sync (legacy). Explicit routes take precedence
+    // over the catch-all `forward`, and `/amallo/*` cannot collide with
+    // Ollama's `/api/*` or `/v1/*`. The larger body limit (avatar batches)
+    // applies to this route only; the streaming fallback keeps axum's
+    // default. Kept alive alongside `/extended/v1/*` until a later release
+    // removes it once web has shipped against the new surface - see
+    // `store::retire_legacy_sync_dir`.
     let sync_routes = Router::new()
         .route(
             "/amallo/sync/{collection}",
@@ -208,8 +211,17 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         )
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
 
+    // The generic document + blob store. Split into two body-limit tiers:
+    // documents are capped much smaller than the old blanket 64 MiB (they
+    // no longer carry inlined avatars - those go through the blob route,
+    // which gets its own larger cap for the bytes themselves).
+    let v1_doc_routes = crate::api::v1::doc_routes().layer(DefaultBodyLimit::max(8 * 1024 * 1024));
+    let v1_blob_routes = crate::api::v1::blob_routes().layer(DefaultBodyLimit::max(33 * 1024 * 1024));
+
     Router::new()
         .merge(sync_routes)
+        .merge(v1_doc_routes)
+        .merge(v1_blob_routes)
         .fallback(forward)
         .layer(middleware::from_fn_with_state(ctx.clone(), require_bearer))
         .layer(cors) // added last => outermost, runs before auth
@@ -266,11 +278,10 @@ mod tests {
     /// sync-store temp dir guard, which the caller must keep alive for the test.
     async fn spawn_test_proxy() -> (String, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let state = Arc::new(AppState::new(
-            TOKEN.to_string(),
-            Settings::default(),
-            dir.path().to_path_buf(),
-        ));
+        let state = Arc::new(
+            AppState::new(TOKEN.to_string(), Settings::default(), dir.path().to_path_buf())
+                .unwrap(),
+        );
         let router = build_router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -514,5 +525,345 @@ mod tests {
             .await
             .unwrap();
         assert!(res.status().is_client_error());
+    }
+
+    // --- /extended/v1/* -----------------------------------------------
+
+    fn doc_hash(text: &str) -> String {
+        crate::store::hash::sha256_hex(text.as_bytes())
+    }
+
+    fn push_record(namespace: &str, key: &str, data: &str, updated_at: i64) -> serde_json::Value {
+        serde_json::json!({
+            "namespace": namespace,
+            "key": key,
+            "hash": doc_hash(data),
+            "updatedAt": updated_at,
+            "deleted": false,
+            "data": serde_json::from_str::<serde_json::Value>(data).unwrap()
+        })
+    }
+
+    fn tombstone_record(namespace: &str, key: &str, updated_at: i64) -> serde_json::Value {
+        serde_json::json!({
+            "namespace": namespace,
+            "key": key,
+            "hash": crate::store::hash::EMPTY_HASH,
+            "updatedAt": updated_at,
+            "deleted": true
+        })
+    }
+
+    #[tokio::test]
+    async fn v1_push_then_pull_round_trip() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        let resp = auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({
+                "records": [
+                    push_record("characters", "a", r#"{"name":"A"}"#, 100),
+                    push_record("characters", "b", r#"{"name":"B"}"#, 100)
+                ]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["results"][0]["status"], "applied");
+        assert_eq!(body["results"][1]["status"], "applied");
+
+        let pulled: serde_json::Value = auth(client.post(format!("{base}/extended/v1/pull")))
+            .json(&serde_json::json!({ "since": 0, "limit": 10 }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let records = pulled["records"].as_array().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["data"]["name"], "A");
+        assert!(!pulled["more"].as_bool().unwrap());
+
+        // Paging by cursor: page1 excludes what page2 returns.
+        let page1: serde_json::Value = auth(client.post(format!("{base}/extended/v1/pull")))
+            .json(&serde_json::json!({ "since": 0, "limit": 1 }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(page1["records"].as_array().unwrap().len(), 1);
+        assert!(page1["more"].as_bool().unwrap());
+        let cursor = page1["cursor"].as_i64().unwrap();
+
+        let page2: serde_json::Value = auth(client.post(format!("{base}/extended/v1/pull")))
+            .json(&serde_json::json!({ "since": cursor, "limit": 1 }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(page2["records"].as_array().unwrap().len(), 1);
+        assert!(!page2["more"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn v1_tombstone_beats_data_then_resurrects() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [push_record("chats", "c", r#"{"t":"hi"}"#, 100)] }))
+            .send()
+            .await
+            .unwrap();
+
+        // Tombstone at the same timestamp wins the tie.
+        auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [tombstone_record("chats", "c", 100)] }))
+            .send()
+            .await
+            .unwrap();
+
+        let pulled: serde_json::Value = auth(client.post(format!("{base}/extended/v1/pull")))
+            .json(&serde_json::json!({ "since": 0, "limit": 10 }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(pulled["records"][0]["deleted"], true);
+
+        // A newer live record resurrects it.
+        auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [push_record("chats", "c", r#"{"t":"back"}"#, 200)] }))
+            .send()
+            .await
+            .unwrap();
+
+        let pulled: serde_json::Value = auth(client.post(format!("{base}/extended/v1/pull")))
+            .json(&serde_json::json!({ "since": 0, "limit": 10 }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(pulled["records"][0]["deleted"], false);
+        assert_eq!(pulled["records"][0]["data"]["t"], "back");
+    }
+
+    #[tokio::test]
+    async fn v1_requires_auth() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        for (method, path) in [
+            (reqwest::Method::GET, "/extended/v1/info"),
+            (reqwest::Method::POST, "/extended/v1/pull"),
+            (reqwest::Method::POST, "/extended/v1/push"),
+            (reqwest::Method::POST, "/extended/v1/blobs/check"),
+            (reqwest::Method::PUT, "/extended/v1/blob/aa"),
+            (reqwest::Method::GET, "/extended/v1/blob/aa"),
+        ] {
+            let res = client
+                .request(method.clone(), format!("{base}{path}"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path} must require auth");
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_invalid_namespace_is_400_not_404() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        let res = auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [push_record("Bogus Namespace", "a", "{}", 1)] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK, "push itself succeeds; the record is rejected");
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["results"][0]["status"], "rejected");
+    }
+
+    #[tokio::test]
+    async fn v1_unknown_valid_namespace_pull_is_empty_200() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let res = auth(reqwest::Client::new().post(format!("{base}/extended/v1/pull")))
+            .json(&serde_json::json!({ "since": 0, "limit": 10, "namespaces": ["lorebooks"] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK, "an unknown but well-formed namespace is not an error");
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert!(body["records"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn v1_push_hash_mismatch_is_rejected() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let mut rec = push_record("characters", "a", r#"{"name":"A"}"#, 100);
+        rec["hash"] = serde_json::Value::String(doc_hash("something else"));
+
+        let res = auth(reqwest::Client::new().post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [rec] }))
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["results"][0]["status"], "rejected");
+    }
+
+    #[tokio::test]
+    async fn v1_blob_round_trip_and_dedup_on_unrelated_edit() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+        let bytes = b"pretend-avatar-bytes";
+        let hash = crate::store::hash::sha256_hex(bytes);
+
+        // Not yet uploaded: push referencing it comes back missingBlobs.
+        let doc = format!(r#"{{"avatar":{{"$blob":"{hash}","mime":"image/png","size":21}}}}"#);
+        let res = auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [push_record("characters", "a", &doc, 100)] }))
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["results"][0]["status"], "missingBlobs");
+        assert_eq!(body["results"][0]["missingBlobs"][0], hash);
+
+        // Check confirms it, upload it, check confirms it's gone.
+        let check: serde_json::Value = auth(client.post(format!("{base}/extended/v1/blobs/check")))
+            .json(&serde_json::json!({ "hashes": [hash] }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(check["missing"][0], hash);
+
+        let put = auth(client.put(format!("{base}/extended/v1/blob/{hash}")))
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(put.status(), reqwest::StatusCode::OK);
+
+        let check: serde_json::Value = auth(client.post(format!("{base}/extended/v1/blobs/check")))
+            .json(&serde_json::json!({ "hashes": [hash] }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(check["missing"].as_array().unwrap().is_empty());
+
+        // Now the push applies, and the blob downloads byte-identically.
+        let res = auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [push_record("characters", "a", &doc, 100)] }))
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["results"][0]["status"], "applied");
+
+        let downloaded = auth(client.get(format!("{base}/extended/v1/blob/{hash}")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(downloaded.status(), reqwest::StatusCode::OK);
+        assert_eq!(downloaded.bytes().await.unwrap().as_ref(), bytes);
+
+        // An edit to an unrelated field must not require re-uploading the
+        // blob: the push carries the same $blob ref, already satisfied.
+        let doc2 = format!(r#"{{"avatar":{{"$blob":"{hash}","mime":"image/png","size":21}},"name":"Ada"}}"#);
+        let res = auth(client.post(format!("{base}/extended/v1/push")))
+            .json(&serde_json::json!({ "records": [push_record("characters", "a", &doc2, 200)] }))
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["results"][0]["status"], "applied", "no missingBlobs the second time - it's already stored");
+    }
+
+    #[tokio::test]
+    async fn v1_blob_hash_mismatch_is_rejected() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let real_hash = crate::store::hash::sha256_hex(b"real bytes");
+        let res = auth(reqwest::Client::new().put(format!("{base}/extended/v1/blob/{real_hash}")))
+            .body("different bytes".to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn v1_blob_not_found_is_404() {
+        let (base, _dir) = spawn_test_proxy().await;
+        let absent = crate::store::hash::sha256_hex(b"never uploaded");
+        let res = auth(reqwest::Client::new().get(format!("{base}/extended/v1/blob/{absent}")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn v1_fresh_stores_have_distinct_store_ids() {
+        let (base_a, _dir_a) = spawn_test_proxy().await;
+        let (base_b, _dir_b) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        let info_a: serde_json::Value = auth(client.get(format!("{base_a}/extended/v1/info")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let info_b: serde_json::Value = auth(client.get(format!("{base_b}/extended/v1/info")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_ne!(info_a["storeId"], info_b["storeId"]);
+        assert_eq!(info_a["protocol"], 1);
+    }
+
+    #[tokio::test]
+    async fn v1_and_legacy_sync_coexist() {
+        // The whole point of the coexistence release: both surfaces must
+        // work side by side against the same running instance.
+        let (base, _dir) = spawn_test_proxy().await;
+        let client = reqwest::Client::new();
+
+        let legacy = auth(client.post(format!("{base}/amallo/sync/characters")))
+            .json(&serde_json::json!({ "records": [], "known": {} }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy.status(), reqwest::StatusCode::OK);
+
+        let v1 = auth(client.get(format!("{base}/extended/v1/info")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(v1.status(), reqwest::StatusCode::OK);
     }
 }

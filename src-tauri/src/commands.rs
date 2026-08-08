@@ -31,7 +31,6 @@ pub fn save_settings(
     if old.relay_url != new_settings.relay_url || old.auto_connect_relay != new_settings.auto_connect_relay {
         relay::respawn(&app)?;
     }
-    // Refreshes "Copy LAN URL"'s enabled state too, which tracks bind_lan.
     tray::refresh_relay(&app, &state.relay_status());
     Ok(())
 }
@@ -39,6 +38,15 @@ pub fn save_settings(
 #[tauri::command]
 pub fn get_bearer_token(state: State<'_, Arc<AppState>>) -> String {
     state.bearer_token()
+}
+
+#[tauri::command]
+pub fn get_lan_url(state: State<'_, Arc<AppState>>) -> String {
+    let port = state.settings().proxy_port;
+    let ip = local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| "127.0.0.1".into());
+    format!("http://{ip}:{port}")
 }
 
 #[tauri::command]

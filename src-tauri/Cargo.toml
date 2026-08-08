@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Securely reach your local Ollama instance from anywhere via an authenticated relay pairing"
 authors = ["tehfonsi <7488280+tehfonsi@users.noreply.github.com>"]
 edition = "2021"
-license = "PolyForm-Noncommercial-1.0.0"
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/OpenCharUI/amallo"
 
 [lib]
@@ -96,6 +96,13 @@ base64 = "0.22"
 # support (the `image` crate) that this never needs, since the PSK only
 # ever gets rendered as SVG, not decoded through an intermediate bitmap.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# Backing store for the generic document/blob store served under
+# /extended/v1. "bundled" compiles SQLite from source rather than linking a
+# system copy — no build host needs a preinstalled libsqlite3, which matters
+# because the GNU toolchain used here has no system SQLite at all. This adds
+# ~250 C symbols to the crate; see the [lib] crate-type comment above for why
+# that is safe (no cdylib, so no DLL export table for GNU ld to overflow).
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

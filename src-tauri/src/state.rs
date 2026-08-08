@@ -5,6 +5,7 @@ use axum::Router;
 use serde::Serialize;
 
 use crate::settings::Settings;
+use crate::store::Store;
 use crate::sync::SyncStore;
 use crate::tray::TrayItems;
 
@@ -26,6 +27,17 @@ pub enum RelayStatus {
     Error { message: String },
 }
 
+/// Whether the local Ollama the proxy forwards to answers — probed in the
+/// background by `ollama::spawn_monitor`. `Unknown` until the first probe
+/// completes, so the tray never claims Ollama is down before anything has
+/// actually looked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OllamaStatus {
+    Unknown,
+    Up,
+    Down,
+}
+
 pub struct AppState {
     /// Bearer token the proxy expects. Kept in memory, persisted to `secrets.json`
     /// (0600) in the app data dir — see `secrets.rs`.
@@ -34,6 +46,8 @@ pub struct AppState {
     pub settings: RwLock<Settings>,
     /// Live relay connection status — see `relay::set_status`.
     pub relay_status: RwLock<RelayStatus>,
+    /// Live local-Ollama reachability — see `ollama::spawn_monitor`.
+    pub ollama_status: RwLock<OllamaStatus>,
     /// Handle of the running proxy server task (aborted on proxy restart).
     pub proxy_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Handle of the running relay connection supervisor (aborted and
@@ -50,26 +64,43 @@ pub struct AppState {
     pub router: OnceLock<Router>,
     /// Menu item handles for live tray updates.
     pub tray_items: OnceLock<TrayItems>,
-    /// Document store backing the `/amallo/sync/*` endpoints.
+    /// Legacy document store backing `/amallo/sync/*` - kept alive
+    /// alongside `store` until a release removes the old endpoints
+    /// entirely (see `store::retire_legacy_sync_dir`).
     pub sync: SyncStore,
+    /// Generic keyed document + blob store backing `/extended/v1/*`.
+    pub store: Store,
 }
 
 impl AppState {
-    pub fn new(bearer_token: String, settings: Settings, sync_dir: PathBuf) -> Self {
-        Self {
+    /// `app_data_dir` is the Tauri app data directory. Both the legacy
+    /// per-collection JSON store and the new SQLite store live under it
+    /// (`sync/` and `store/` respectively) so they can coexist during the
+    /// migration window without either being moved out from under the
+    /// other - see `Store::open`'s doc comment.
+    pub fn new(bearer_token: String, settings: Settings, app_data_dir: PathBuf) -> Result<Self, String> {
+        let sync_dir = app_data_dir.join("sync");
+        let store = Store::open(&app_data_dir).map_err(|e| e.to_string())?;
+        Ok(Self {
             bearer_token: RwLock::new(bearer_token),
             settings: RwLock::new(settings),
             relay_status: RwLock::new(RelayStatus::Disabled),
+            ollama_status: RwLock::new(OllamaStatus::Unknown),
             proxy_task: Mutex::new(None),
             relay_task: Mutex::new(None),
             router: OnceLock::new(),
             tray_items: OnceLock::new(),
             sync: SyncStore::new(sync_dir),
-        }
+            store,
+        })
     }
 
     pub fn relay_status(&self) -> RelayStatus {
         self.relay_status.read().unwrap().clone()
+    }
+
+    pub fn ollama_status(&self) -> OllamaStatus {
+        *self.ollama_status.read().unwrap()
     }
 
     pub fn bearer_token(&self) -> String {

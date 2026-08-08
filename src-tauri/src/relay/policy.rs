@@ -60,7 +60,20 @@ const ALLOWED_EXACT: &[(&str, &str)] = &[
 /// with (duplicated rather than imported so a change to one doesn't
 /// silently loosen the other; a mismatch fails closed either way, since
 /// `sync_get`/`sync_post` re-validate the collection name themselves).
+/// Legacy: kept alive alongside `/extended/v1/*` until a later release
+/// removes both this and `sync.rs` together.
 const SYNC_COLLECTIONS: &[&str] = &["characters", "personas", "chats"];
+
+/// `/extended/v1/*` document-store routes: namespace and key travel in the
+/// JSON body, not the path (see `api/v1.rs`'s wire-protocol doc comment),
+/// so - unlike the old `/amallo/sync/{collection}` shape - every one of
+/// these is an exact match. Only the blob route is patterned.
+const ALLOWED_EXACT_V1: &[(&str, &str)] = &[
+    ("GET", "/extended/v1/info"),
+    ("POST", "/extended/v1/pull"),
+    ("POST", "/extended/v1/push"),
+    ("POST", "/extended/v1/blobs/check"),
+];
 
 /// Validates a relay-originated request's method and path (query string
 /// already stripped by the caller, but this defends against a caller that
@@ -88,6 +101,28 @@ pub fn check_method_path(method: &str, path: &str) -> Result<(), PolicyError> {
     if let Some(collection) = path_only.strip_prefix("/amallo/sync/") {
         let is_get_or_post = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("POST");
         if is_get_or_post && !collection.contains('/') && SYNC_COLLECTIONS.contains(&collection) {
+            return Ok(());
+        }
+    }
+
+    for (m, p) in ALLOWED_EXACT_V1 {
+        if method.eq_ignore_ascii_case(m) && path_only == *p {
+            return Ok(());
+        }
+    }
+
+    // Blob bytes: GET (download) and PUT (upload) only - no DELETE (GC is
+    // server-internal; a client must never be able to delete a blob
+    // another device still references), no POST, no HEAD (`blobs/check`
+    // covers existence checks in batch). The hash charset is imported from
+    // `store::validate` rather than duplicated like `SYNC_COLLECTIONS`
+    // above: that duplication was sound for a *list*, where the two ends
+    // could legitimately diverge, but two hand-written hex validators that
+    // disagree would be strictly worse than one shared one here - the
+    // failure mode is a path-traversal-shaped surface, not a stale 404.
+    if let Some(hash) = path_only.strip_prefix("/extended/v1/blob/") {
+        let is_get_or_put = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("PUT");
+        if is_get_or_put && crate::store::validate::valid_hash(hash) {
             return Ok(());
         }
     }
@@ -169,6 +204,54 @@ mod tests {
             check_method_path("DELETE", "/amallo/sync/chats"),
             Err(PolicyError::NotAllowed),
             "sync only allows GET/POST"
+        );
+    }
+
+    #[test]
+    fn allows_v1_doc_routes() {
+        assert!(check_method_path("GET", "/extended/v1/info").is_ok());
+        assert!(check_method_path("POST", "/extended/v1/pull").is_ok());
+        assert!(check_method_path("POST", "/extended/v1/push").is_ok());
+        assert!(check_method_path("POST", "/extended/v1/blobs/check").is_ok());
+        assert_eq!(
+            check_method_path("DELETE", "/extended/v1/pull"),
+            Err(PolicyError::NotAllowed),
+            "doc routes are exact method+path matches"
+        );
+    }
+
+    #[test]
+    fn allows_v1_blob_get_and_put_only() {
+        let hash = "a".repeat(64);
+        assert!(check_method_path("GET", &format!("/extended/v1/blob/{hash}")).is_ok());
+        assert!(check_method_path("PUT", &format!("/extended/v1/blob/{hash}")).is_ok());
+        assert_eq!(
+            check_method_path("DELETE", &format!("/extended/v1/blob/{hash}")),
+            Err(PolicyError::NotAllowed),
+            "GC is server-internal; the relay must never let a client delete a blob"
+        );
+        assert_eq!(
+            check_method_path("POST", &format!("/extended/v1/blob/{hash}")),
+            Err(PolicyError::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_v1_blob_hash() {
+        assert_eq!(
+            check_method_path("GET", &format!("/extended/v1/blob/{}", "a".repeat(63))),
+            Err(PolicyError::NotAllowed),
+            "63 hex chars is not a valid hash"
+        );
+        assert_eq!(
+            check_method_path("GET", &format!("/extended/v1/blob/{}", "A".repeat(64))),
+            Err(PolicyError::NotAllowed),
+            "uppercase hex is rejected"
+        );
+        assert_eq!(
+            check_method_path("GET", "/extended/v1/blob/../../etc/passwd"),
+            Err(PolicyError::PathTraversal),
+            "the `..` check runs before the allowlist match"
         );
     }
 

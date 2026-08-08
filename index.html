@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>amallo</title>
+    <title>Amallo</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
     <main class="container">
       <header>
-        <h1>amallo</h1>
+        <h1>Amallo</h1>
         <p class="subtitle">Secure remote access to your local Ollama</p>
       </header>
 
@@ -55,6 +55,14 @@
           Allow LAN access (bind to 0.0.0.0)
         </label>
 
+        <div id="lan-url-row">
+          <label for="lan-url">LAN URL <span class="hint">(use this from another device on your network)</span></label>
+          <div class="row">
+            <input id="lan-url" type="text" readonly />
+            <button id="copy-lan-url" type="button">Copy</button>
+          </div>
+        </div>
+
         <label for="bearer-token">Bearer token <span class="hint">(clients send this as API key)</span></label>
         <div class="row">
           <input id="bearer-token" type="text" readonly />
@@ -67,7 +75,7 @@
         <h2>Behavior</h2>
         <label class="checkbox">
           <input id="autostart" type="checkbox" />
-          Launch amallo at login
+          Launch Amallo at login
         </label>
       </section>
 
