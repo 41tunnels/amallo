@@ -27,9 +27,21 @@ pub fn save_settings(
     if old.proxy_port != new_settings.proxy_port || old.bind_lan != new_settings.bind_lan {
         proxy::respawn(&app)?;
     }
-    // Reconnect the relay if its target or auto-connect preference changed.
+    // Reconnect the relay only if its target or auto-connect preference
+    // changed.
     if old.relay_url != new_settings.relay_url || old.auto_connect_relay != new_settings.auto_connect_relay {
         relay::respawn(&app)?;
+    } else if old.openai_endpoint_enabled != new_settings.openai_endpoint_enabled {
+        // Toggling the endpoint is published to the live connection
+        // instead (spec §11.3): both lanes share one socket, so
+        // reconnecting to change the hello would drop a paired browser
+        // mid-chat over a setting that has nothing to do with it.
+        let key = if new_settings.openai_endpoint_enabled {
+            Some(secrets::get_or_create_openai_key(&app)?)
+        } else {
+            None
+        };
+        state.relay_api_key.send_replace(key);
     }
     tray::refresh_relay(&app, &state.relay_status());
     Ok(())
@@ -57,6 +69,92 @@ pub fn regenerate_bearer_token(
     let token = secrets::regenerate_bearer_token(&app)?;
     *state.bearer_token.write().unwrap() = token.clone();
     Ok(token)
+}
+
+/// What the settings UI needs to show for the OpenAI-compatible endpoint
+/// (spec §11): whether it is on, and the exact two strings a user pastes
+/// into another app.
+#[derive(serde::Serialize)]
+pub struct OpenAiEndpoint {
+    pub enabled: bool,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+#[tauri::command]
+pub fn get_openai_endpoint(
+    app: AppHandle<Wry>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<OpenAiEndpoint, String> {
+    let s = state.settings();
+    let api_key = secrets::get_or_create_openai_key(&app)?;
+    Ok(OpenAiEndpoint {
+        enabled: s.openai_endpoint_enabled,
+        base_url: openai_base_url(&s.relay_url, &api_key),
+        api_key,
+    })
+}
+
+/// Issues a fresh API key and republishes its hash to the live relay
+/// connection — the moment that lands, every client holding the old key
+/// gets a 401 and any request still in flight under it is torn down.
+/// This is the revoke button.
+///
+/// Publishing rather than reconnecting is the point (spec §11.3): the
+/// paired browser shares this socket, and revoking an API key is no
+/// reason to interrupt someone's chat. If the relay is disconnected the
+/// value is simply recorded and the next hello carries it.
+#[tauri::command]
+pub fn regenerate_openai_key(
+    app: AppHandle<Wry>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let key = secrets::regenerate_openai_key(&app)?;
+    if state.settings().openai_endpoint_enabled {
+        state.relay_api_key.send_replace(Some(key.clone()));
+    }
+    Ok(key)
+}
+
+/// Builds the base URL a third-party client is configured with. The relay
+/// URL is a WebSocket URL; the HTTP endpoint is the same host over plain
+/// HTTP(S), with the key as the first path segment.
+///
+/// The key is embedded here because that form works with every client,
+/// including the ones that only accept a base URL. Clients that can send
+/// an `Authorization` header may use the key there instead and drop the
+/// path segment — the relay accepts both.
+fn openai_base_url(relay_url: &str, api_key: &str) -> String {
+    let base = relay_url.trim_end_matches('/');
+    let http = match base.strip_prefix("wss://") {
+        Some(rest) => format!("https://{rest}"),
+        None => match base.strip_prefix("ws://") {
+            Some(rest) => format!("http://{rest}"),
+            None => base.to_string(),
+        },
+    };
+    format!("{http}/{api_key}/v1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openai_base_url;
+
+    #[test]
+    fn builds_https_base_url_from_wss_relay() {
+        assert_eq!(
+            openai_base_url("wss://relay.opencharui.com", "41t_abc"),
+            "https://relay.opencharui.com/41t_abc/v1"
+        );
+    }
+
+    #[test]
+    fn builds_http_base_url_from_ws_relay_and_trims_slash() {
+        assert_eq!(
+            openai_base_url("ws://127.0.0.1:8080/", "41t_abc"),
+            "http://127.0.0.1:8080/41t_abc/v1"
+        );
+    }
 }
 
 #[tauri::command]

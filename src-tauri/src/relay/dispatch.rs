@@ -62,6 +62,10 @@ struct StreamEntry {
 pub struct Dispatcher {
     router: Router,
     bearer_token: String,
+    /// Which allowlist inbound requests are checked against. An HTTP-mode
+    /// connection gets a strictly smaller surface than the E2E one — see
+    /// `policy::PolicyMode`.
+    policy_mode: policy::PolicyMode,
     /// Outbound inner frames — not yet wire-encoded or sealed; conn.rs
     /// (Step 4) encodes them onto the plaintext channel, crypto.rs (Step
     /// 5) will seal them instead. Keeping this boundary as typed
@@ -73,9 +77,23 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     pub fn new(router: Router, bearer_token: String, out_tx: mpsc::Sender<InnerFrame>) -> Arc<Self> {
+        Self::with_policy(router, bearer_token, out_tx, policy::PolicyMode::E2E)
+    }
+
+    /// Builds a dispatcher restricted to a specific allowlist. The E2E
+    /// path uses `new`; the OpenAI-compatible endpoint passes
+    /// `PolicyMode::Http` so a leaked API key cannot reach model
+    /// management.
+    pub fn with_policy(
+        router: Router,
+        bearer_token: String,
+        out_tx: mpsc::Sender<InnerFrame>,
+        policy_mode: policy::PolicyMode,
+    ) -> Arc<Self> {
         Arc::new(Self {
             router,
             bearer_token,
+            policy_mode,
             out_tx,
             streams: Mutex::new(HashMap::new()),
         })
@@ -109,7 +127,11 @@ impl Dispatcher {
             }
         };
 
-        if let Err(e) = policy::check_method_path(&head.m, &head.p) {
+        let allowed = match self.policy_mode {
+            policy::PolicyMode::E2E => policy::check_method_path(&head.m, &head.p),
+            policy::PolicyMode::Http => policy::check_http_method_path(&head.m, &head.p),
+        };
+        if let Err(e) = allowed {
             self.send_error(stream_id, "forbidden", &e.to_string()).await;
             return;
         }

@@ -6,8 +6,18 @@
 //! peer (e.g. the relay repo's `fakeclient`, or `web`) can attach and
 //! exercise the full E2E path.
 //!
+//! Passing an API key as the second argument opens the connection in
+//! dual mode, so both lanes ride the one socket: the E2E pairing as
+//! before, plus the OpenAI-compatible endpoint reachable at
+//! `http(s)://<relay-host>/<api_key>/v1/...`.
+//!
+//! A third argument exercises the in-place rekey (spec §11.3): after a
+//! short delay the key is republished as that value — or withdrawn
+//! entirely, if it is the literal `off` — on the live connection, with no
+//! reconnect. The paired session must survive it.
+//!
 //! Not wired into any build/test target — run directly:
-//!   cargo run --bin relay_smoke [relay_url]
+//!   cargo run --bin relay_smoke [relay_url] [api_key] [rekey_to|off]
 
 use amallo_lib::relay::conn;
 use axum::routing::get;
@@ -24,6 +34,7 @@ async fn main() {
     let relay_url = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "wss://amallo-relay.tehfonsi.com".to_string());
+    let api_key = std::env::args().nth(2);
 
     let mut pair_id = [0u8; 16];
     let mut psk = [0u8; 32];
@@ -35,10 +46,41 @@ async fn main() {
     eprintln!("relay_smoke: pair_id={}", b64.encode(pair_id));
     eprintln!("relay_smoke: psk={}", b64.encode(psk));
 
-    let router = Router::new().route(
-        "/api/tags",
-        get(|| async { r#"{"models":[{"name":"relay-smoke-test"}]}"# }),
-    );
+    // `/api/tags` is on the E2E allowlist only and `/v1/models` on the
+    // HTTP one, so which route answers proves which lane carried the
+    // request — and proves the allowlists stayed separate across the
+    // shared socket.
+    let router = Router::new()
+        .route(
+            "/api/tags",
+            get(|| async { r#"{"models":[{"name":"relay-smoke-test"}]}"# }),
+        )
+        .route(
+            "/v1/models",
+            get(|| async { r#"{"object":"list","data":[{"id":"relay-smoke-openai"}]}"# }),
+        );
+
+    match &api_key {
+        Some(key) => eprintln!("relay_smoke: dual mode, openai base=<relay>/{key}/v1"),
+        None => eprintln!("relay_smoke: e2e only (pass an api key as arg 2 for dual mode)"),
+    }
+
+    // Dropping the sender when there is nothing to rekey to also exercises
+    // the read loop's "no one is publishing keys" path.
+    let (key_tx, key_rx) = tokio::sync::watch::channel(api_key);
+    match std::env::args().nth(3) {
+        Some(next) => {
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                let value = if next == "off" { None } else { Some(next) };
+                eprintln!("relay_smoke: rekeying -> {value:?}");
+                key_tx.send_replace(value);
+                // Hold the sender open; a dropped one closes the watch.
+                std::future::pending::<()>().await;
+            });
+        }
+        None => drop(key_tx),
+    }
 
     let result = conn::run_once_with_status(
         &relay_url,
@@ -46,6 +88,7 @@ async fn main() {
         psk,
         router,
         "smoke-bearer".to_string(),
+        key_rx,
         |status| eprintln!("relay_smoke: status -> {status:?}"),
     )
     .await;

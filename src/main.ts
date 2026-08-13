@@ -6,6 +6,13 @@ interface Settings {
   bind_lan: boolean;
   relay_url: string;
   auto_connect_relay: boolean;
+  openai_endpoint_enabled: boolean;
+}
+
+interface OpenAiEndpoint {
+  enabled: boolean;
+  base_url: string;
+  api_key: string;
 }
 
 type RelayStatus =
@@ -32,6 +39,11 @@ const relayUrl = $<HTMLInputElement>("relay-url");
 const autoConnectRelay = $<HTMLInputElement>("auto-connect-relay");
 const relayStatusEl = $<HTMLElement>("relay-status");
 const toggleRelayBtn = $<HTMLButtonElement>("toggle-relay");
+
+const openaiEnabled = $<HTMLInputElement>("openai-enabled");
+const openaiDetails = $<HTMLDivElement>("openai-details");
+const openaiBaseUrl = $<HTMLInputElement>("openai-base-url");
+const openaiKey = $<HTMLInputElement>("openai-key");
 
 let currentRelayStatus: RelayStatus = { state: "disabled" };
 
@@ -77,6 +89,15 @@ function flash(button: HTMLButtonElement, label: string) {
   setTimeout(() => (button.textContent = original), 1200);
 }
 
+// The base URL embeds the API key (some clients accept only a base URL),
+// so it has to be re-read after a key rotation as well as on load.
+async function refreshOpenAI() {
+  const endpoint = await invoke<OpenAiEndpoint>("get_openai_endpoint");
+  openaiBaseUrl.value = endpoint.base_url;
+  openaiKey.value = endpoint.api_key;
+  openaiDetails.hidden = !openaiEnabled.checked;
+}
+
 async function refreshLanUrl() {
   lanUrlRow.hidden = !bindLan.checked;
   if (bindLan.checked) {
@@ -90,8 +111,10 @@ async function init() {
   bindLan.checked = settings.bind_lan;
   relayUrl.value = settings.relay_url;
   autoConnectRelay.checked = settings.auto_connect_relay;
+  openaiEnabled.checked = settings.openai_endpoint_enabled;
 
   await refreshLanUrl();
+  await refreshOpenAI();
   bearerToken.value = await invoke<string>("get_bearer_token");
   autostart.checked = await invoke<boolean>("get_autostart").catch(() => false);
   renderRelayStatus(await invoke<RelayStatus>("get_relay_status"));
@@ -134,6 +157,7 @@ async function persistSettings(changed: HTMLElement) {
     bind_lan: bindLan.checked,
     relay_url: relayUrl.value.trim(),
     auto_connect_relay: autoConnectRelay.checked,
+    openai_endpoint_enabled: openaiEnabled.checked,
   };
   proxyPort.value = String(newSettings.proxy_port);
   relayUrl.value = newSettings.relay_url;
@@ -143,11 +167,35 @@ async function persistSettings(changed: HTMLElement) {
   // one so it doesn't silently point a scanned code at the old relay.
   if (changed === relayUrl) await refreshPairing();
   if (changed === bindLan || changed === proxyPort) await refreshLanUrl();
+  // The OpenAI base URL is derived from the relay URL, so it goes stale
+  // for the same reason the pairing code does.
+  if (changed === relayUrl || changed === openaiEnabled) await refreshOpenAI();
 }
 
-for (const el of [proxyPort, bindLan, relayUrl, autoConnectRelay]) {
+for (const el of [proxyPort, bindLan, relayUrl, autoConnectRelay, openaiEnabled]) {
   el.addEventListener("change", () => persistSettings(el));
 }
+
+$<HTMLButtonElement>("copy-openai-url").addEventListener("click", async (e) => {
+  await invoke("copy_to_clipboard", { text: openaiBaseUrl.value });
+  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+});
+
+$<HTMLButtonElement>("copy-openai-key").addEventListener("click", async (e) => {
+  await invoke("copy_to_clipboard", { text: openaiKey.value });
+  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+});
+
+$<HTMLButtonElement>("regen-openai-key").addEventListener("click", async () => {
+  if (
+    !confirm(
+      "Regenerate the API key? Every app configured with the old key stops working immediately.",
+    )
+  )
+    return;
+  await invoke<string>("regenerate_openai_key");
+  await refreshOpenAI();
+});
 
 autostart.addEventListener("change", async () => {
   await invoke("set_autostart", { enabled: autostart.checked }).catch(() => {});

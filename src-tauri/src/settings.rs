@@ -24,6 +24,18 @@ pub struct Settings {
     /// relay path is the happy path (no `OLLAMA_ORIGINS` setup, works
     /// from anywhere), so this defaults to true.
     pub auto_connect_relay: bool,
+    /// Expose the OpenAI-compatible HTTP endpoint through the relay (spec
+    /// §11), so any OpenAI-compatible app can point at this machine's
+    /// Ollama with an API key.
+    ///
+    /// Defaults to **false**, unlike `auto_connect_relay`: traffic on that
+    /// path is not end-to-end encrypted (an arbitrary third-party client
+    /// has no PSK, so the relay necessarily sees prompts and completions
+    /// in plaintext), and it makes this machine's GPU reachable by anyone
+    /// holding the key. That is a deliberate trade a user opts into, never
+    /// a default.
+    #[serde(default)]
+    pub openai_endpoint_enabled: bool,
 }
 
 impl Default for Settings {
@@ -33,6 +45,7 @@ impl Default for Settings {
             bind_lan: false,
             relay_url: DEFAULT_RELAY_URL.to_string(),
             auto_connect_relay: true,
+            openai_endpoint_enabled: false,
         }
     }
 }

@@ -3,6 +3,7 @@ use std::sync::{Mutex, OnceLock, RwLock};
 
 use axum::Router;
 use serde::Serialize;
+use tokio::sync::watch;
 
 use crate::settings::Settings;
 use crate::store::Store;
@@ -52,7 +53,24 @@ pub struct AppState {
     pub proxy_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Handle of the running relay connection supervisor (aborted and
     /// replaced by `relay::respawn`).
+    /// Covers both lanes: the OpenAI-compatible endpoint (spec §11) rides
+    /// this same connection rather than holding one of its own.
     pub relay_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// The API key the OpenAI-compatible lane currently accepts, or `None`
+    /// when the endpoint is switched off.
+    ///
+    /// A watch channel rather than a plain field because the live relay
+    /// connection subscribes to it: publishing a new value re-keys the
+    /// lane in place (spec §11.3) instead of forcing the reconnect that
+    /// republishing via a fresh hello would need — which, now that both
+    /// lanes share one socket, would interrupt a paired browser's chat
+    /// every time a key was rotated. A connection that starts later just
+    /// reads the current value for its hello.
+    ///
+    /// Always write with `send_replace`: `send` refuses when no receiver
+    /// exists, which is exactly the case while the relay is disconnected,
+    /// and the value still has to be recorded for the next hello.
+    pub relay_api_key: watch::Sender<Option<String>>,
     /// The shared axum router both the local proxy listener and the relay
     /// dispatcher serve. Built once (see `proxy::build_router`) rather
     /// than per-listener-restart: `proxy::respawn`'s previous behavior of
@@ -88,6 +106,7 @@ impl AppState {
             ollama_status: RwLock::new(OllamaStatus::Unknown),
             proxy_task: Mutex::new(None),
             relay_task: Mutex::new(None),
+            relay_api_key: watch::channel(None).0,
             router: OnceLock::new(),
             tray_items: OnceLock::new(),
             sync: SyncStore::new(sync_dir),

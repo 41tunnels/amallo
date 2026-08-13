@@ -6,6 +6,13 @@
 //! `auto_connect_relay`, and Step 4's plaintext dev bridge
 //! (`conn::run_once_insecure`), reachable only via
 //! `AMALLO_RELAY_INSECURE=1` and never used against a production relay.
+//!
+//! There is exactly one supervised connection. The OpenAI-compatible
+//! endpoint (spec §11) rides the same socket as a second lane rather than
+//! dialling its own — see `conn`'s module docs. That is why enabling or
+//! disabling it, or rotating its key, currently goes through `respawn`:
+//! the token hash is published in the hello, so changing it means a new
+//! hello. Making that in-place is the next phase's job.
 
 pub mod conn;
 pub mod crypto;
@@ -22,9 +29,10 @@ use axum::Router;
 use base64::Engine;
 use rand::Rng;
 use tauri::{AppHandle, Emitter, Manager, Wry};
+use tokio::sync::watch;
 
 use crate::state::{AppState, RelayStatus};
-use crate::{pairing, tray};
+use crate::{pairing, secrets, tray};
 
 const BACKOFF_BASE: Duration = Duration::from_millis(500);
 const BACKOFF_MULTIPLIER: f64 = 1.8;
@@ -84,7 +92,9 @@ pub fn connect(app: &AppHandle<Wry>) -> Result<(), String> {
 }
 
 /// Stops the relay connection supervisor — backs the tray/settings
-/// "Disconnect Relay" action.
+/// "Disconnect Relay" action. This now stops the OpenAI endpoint too:
+/// both lanes share one socket, so disconnecting the relay disconnects
+/// everything that rides it.
 pub fn disconnect(app: &AppHandle<Wry>) {
     let state = app.state::<Arc<AppState>>().inner().clone();
     if let Some(task) = state.relay_task.lock().unwrap().take() {
@@ -101,11 +111,24 @@ fn spawn_real(app: &AppHandle<Wry>, state: &Arc<AppState>) -> Result<(), String>
     let bearer_token = state.bearer_token();
     let (pair_id, psk) = pairing::get_or_create(app)?;
     let relay_url = state.settings().relay_url;
+    // Only materialised when the endpoint is actually switched on, so a
+    // user who never enables it never has a key generated at all — and
+    // the hello stays byte-identical to the pre-merge one.
+    let api_key = if state.settings().openai_endpoint_enabled {
+        println!("amallo: relay: OpenAI endpoint enabled, publishing its token hash");
+        Some(secrets::get_or_create_openai_key(app)?)
+    } else {
+        None
+    };
+    // Seeded before subscribing so the connection's hello sees the
+    // current value and its watch arm only fires on later changes.
+    state.relay_api_key.send_replace(api_key);
+    let api_key_rx = state.relay_api_key.subscribe();
 
     set_status(app, RelayStatus::Connecting);
     let app_clone = app.clone();
     let task = tauri::async_runtime::spawn(async move {
-        supervise(app_clone, relay_url, pair_id, psk, router, bearer_token).await;
+        supervise(app_clone, relay_url, pair_id, psk, router, bearer_token, api_key_rx).await;
     });
     *state.relay_task.lock().unwrap() = Some(task);
     Ok(())
@@ -176,6 +199,7 @@ async fn supervise(
     psk: [u8; 32],
     router: Router,
     bearer_token: String,
+    api_key_rx: watch::Receiver<Option<String>>,
 ) {
     let mut backoff = BACKOFF_BASE;
     loop {
@@ -183,7 +207,16 @@ async fn supervise(
         set_status(&app, RelayStatus::Connecting);
         println!("amallo: relay: connecting to {relay_url}");
 
-        match conn::run_once(&app, &relay_url, pair_id, psk, router.clone(), bearer_token.clone()).await {
+        let attempt = conn::run_once(
+            &app,
+            &relay_url,
+            pair_id,
+            psk,
+            router.clone(),
+            bearer_token.clone(),
+            api_key_rx.clone(),
+        );
+        match attempt.await {
             Ok(()) => println!("amallo: relay: connection closed"),
             Err(e) => eprintln!("amallo: relay: connection error: {e}"),
         }

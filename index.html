@@ -45,6 +45,39 @@
       </section>
 
       <section class="card">
+        <h2>OpenAI-compatible endpoint</h2>
+        <p class="hint">
+          Use this machine's Ollama from any OpenAI-compatible app — Open WebUI, Cursor,
+          Continue, LibreChat, or an SDK. Paste both values below into the app's OpenAI settings.
+        </p>
+        <p class="warn">
+          Unlike pairing, this path is <strong>not end-to-end encrypted</strong>: the relay
+          can read prompts and replies. Anyone holding the key can use this machine's GPU.
+          Only model listing and inference are reachable — never model downloads or deletion.
+        </p>
+
+        <label class="checkbox">
+          <input id="openai-enabled" type="checkbox" />
+          Enable the OpenAI-compatible endpoint
+        </label>
+
+        <div id="openai-details" hidden>
+          <label for="openai-base-url">Base URL</label>
+          <div class="row">
+            <input id="openai-base-url" type="text" readonly />
+            <button id="copy-openai-url" type="button">Copy</button>
+          </div>
+
+          <label for="openai-key">API key <span class="hint">(paste into the app's API key field as well)</span></label>
+          <div class="row">
+            <input id="openai-key" type="text" readonly />
+            <button id="copy-openai-key" type="button">Copy</button>
+            <button id="regen-openai-key" type="button" title="Revokes the old key immediately">↻</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
         <h2>Proxy</h2>
         <div class="row">
           <label for="proxy-port" class="inline">Local port</label>

@@ -55,6 +55,80 @@ const ALLOWED_EXACT: &[(&str, &str)] = &[
     ("DELETE", "/api/delete"),
 ];
 
+/// Which allowlist a relay-originated request is checked against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyMode {
+    /// The E2E-paired web PWA: the full native surface in `ALLOWED_EXACT`,
+    /// including model management, because the peer is the user's own
+    /// paired browser and the PSK handshake proves it.
+    E2E,
+    /// The OpenAI-compatible HTTP endpoint (spec §11). The caller is
+    /// anyone holding an API key, over a path the relay can read, so this
+    /// gets a strictly smaller surface.
+    Http,
+}
+
+/// Exact method+path pairs reachable over the OpenAI-compatible endpoint.
+///
+/// Deliberately much smaller than `ALLOWED_EXACT`: this endpoint faces the
+/// open internet behind nothing but a bearer token, so a leaked key must
+/// cost the user inference cycles and nothing more. Note what is absent —
+/// `/api/pull` and `/api/delete` are on the native allowlist, and a
+/// leaked key that reached them could make the machine download a 70B
+/// model or destroy its model library. Ollama serves all of these
+/// natively; nothing here needs translating.
+const ALLOWED_HTTP_EXACT: &[(&str, &str)] = &[
+    ("POST", "/v1/chat/completions"),
+    ("POST", "/v1/completions"),
+    ("POST", "/v1/embeddings"),
+    ("GET", "/v1/models"),
+];
+
+/// Validates a request arriving over the OpenAI-compatible HTTP endpoint.
+/// Shares the traversal/length defences with `check_method_path` but never
+/// consults the native allowlist.
+pub fn check_http_method_path(method: &str, path: &str) -> Result<(), PolicyError> {
+    let path_only = sanitize_path(method, path)?;
+
+    for (m, p) in ALLOWED_HTTP_EXACT {
+        if method.eq_ignore_ascii_case(m) && path_only == *p {
+            return Ok(());
+        }
+    }
+
+    // `GET /v1/models/{id}` — the per-model detail endpoint OpenAI clients
+    // call when they resolve a model name. The id is opaque here; the
+    // traversal checks in `sanitize_path` already ran, and Ollama itself
+    // 404s an unknown one.
+    if method.eq_ignore_ascii_case("GET") {
+        if let Some(rest) = path_only.strip_prefix("/v1/models/") {
+            if !rest.is_empty() && !rest.contains('/') {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(PolicyError::NotAllowed)
+}
+
+/// Shared prologue for both allowlists: bounds the path, strips the query
+/// string, and rejects traversal. Split out so the two modes cannot drift
+/// on the defences they have in common.
+fn sanitize_path<'a>(_method: &str, path: &'a str) -> Result<&'a str, PolicyError> {
+    if path.len() > MAX_PATH_BYTES {
+        return Err(PolicyError::PathTooLong);
+    }
+    let path_only = path.split('?').next().unwrap_or(path);
+    if !path_only.starts_with('/') {
+        return Err(PolicyError::NotAllowed);
+    }
+    let lower = path_only.to_ascii_lowercase();
+    if path_only.contains("..") || lower.contains("%2e") {
+        return Err(PolicyError::PathTraversal);
+    }
+    Ok(path_only)
+}
+
 /// The three sync collections `sync.rs` actually serves — see
 /// `sync.rs`'s own `COLLECTIONS` allowlist, which this must stay in sync
 /// with (duplicated rather than imported so a change to one doesn't
@@ -80,17 +154,7 @@ const ALLOWED_EXACT_V1: &[(&str, &str)] = &[
 /// forgot to). Every check runs regardless of which one fails first — the
 /// order below is cheapest-first, not importance-first.
 pub fn check_method_path(method: &str, path: &str) -> Result<(), PolicyError> {
-    if path.len() > MAX_PATH_BYTES {
-        return Err(PolicyError::PathTooLong);
-    }
-    let path_only = path.split('?').next().unwrap_or(path);
-    if !path_only.starts_with('/') {
-        return Err(PolicyError::NotAllowed);
-    }
-    let lower = path_only.to_ascii_lowercase();
-    if path_only.contains("..") || lower.contains("%2e") {
-        return Err(PolicyError::PathTraversal);
-    }
+    let path_only = sanitize_path(method, path)?;
 
     for (m, p) in ALLOWED_EXACT {
         if method.eq_ignore_ascii_case(m) && path_only == *p {
@@ -295,6 +359,59 @@ mod tests {
         assert!(filtered.iter().any(|(k, _)| k == "content-type"));
         assert!(filtered.iter().any(|(k, _)| k == "Accept"));
         assert!(!filtered.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization")));
+    }
+
+    #[test]
+    fn http_mode_allows_openai_surface() {
+        assert!(check_http_method_path("POST", "/v1/chat/completions").is_ok());
+        assert!(check_http_method_path("POST", "/v1/completions").is_ok());
+        assert!(check_http_method_path("POST", "/v1/embeddings").is_ok());
+        assert!(check_http_method_path("GET", "/v1/models").is_ok());
+        assert!(check_http_method_path("GET", "/v1/models/llama3.2:3b").is_ok());
+    }
+
+    #[test]
+    fn http_mode_refuses_destructive_native_endpoints() {
+        // The whole point of a separate allowlist: a leaked API key must
+        // not be able to delete the user's models or make the machine pull
+        // a 70B, even though the E2E path permits both.
+        assert_eq!(
+            check_http_method_path("POST", "/api/pull"),
+            Err(PolicyError::NotAllowed)
+        );
+        assert_eq!(
+            check_http_method_path("DELETE", "/api/delete"),
+            Err(PolicyError::NotAllowed)
+        );
+        assert!(check_method_path("POST", "/api/pull").is_ok(), "still allowed on the E2E path");
+    }
+
+    #[test]
+    fn http_mode_refuses_native_and_sync_paths() {
+        assert_eq!(check_http_method_path("GET", "/api/tags"), Err(PolicyError::NotAllowed));
+        assert_eq!(
+            check_http_method_path("GET", "/amallo/sync/chats"),
+            Err(PolicyError::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn http_mode_enforces_method_and_traversal() {
+        assert_eq!(
+            check_http_method_path("GET", "/v1/chat/completions"),
+            Err(PolicyError::NotAllowed),
+            "method must match"
+        );
+        assert_eq!(
+            check_http_method_path("GET", "/v1/../secrets"),
+            Err(PolicyError::PathTraversal)
+        );
+        assert_eq!(
+            check_http_method_path("GET", "/v1/models/a/b"),
+            Err(PolicyError::NotAllowed),
+            "model id may not contain a slash"
+        );
+        assert!(check_http_method_path("GET", "/v1/models?x=1").is_ok());
     }
 
     #[test]

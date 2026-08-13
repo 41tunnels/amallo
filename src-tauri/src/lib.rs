@@ -91,6 +91,8 @@ pub fn run() {
             commands::regenerate_pairing,
             commands::connect_relay,
             commands::disconnect_relay,
+            commands::get_openai_endpoint,
+            commands::regenerate_openai_key,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

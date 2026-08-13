@@ -18,6 +18,15 @@ pub struct Channel(pub u8);
 pub const CHANNEL_CONTROL: Channel = Channel(0x00);
 pub const CHANNEL_CIPHERTEXT: Channel = Channel(0x01);
 pub const CHANNEL_HANDSHAKE: Channel = Channel(0x02);
+/// Inner frames with no AEAD wrapping, carrying the OpenAI-compatible
+/// HTTP endpoint's lane (spec §11), where the peer is the relay itself
+/// acting on behalf of a third-party client that has no PSK.
+///
+/// Only valid on a connection whose hello asked for that lane — a
+/// `mode:"dual"` one in amallo's case (spec §11.3). The read loop refuses
+/// it otherwise, and it is dispatched against the inference-only
+/// allowlist, never the E2E one.
+pub const CHANNEL_PLAIN: Channel = Channel(0x03);
 
 const FLAG_CONN_ID: u8 = 0x01;
 /// Every reserved bit (1-7): MUST be zero in v1 (spec §2).

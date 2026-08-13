@@ -22,6 +22,13 @@ struct SecretFile {
     relay_pair_id: String,
     #[serde(default)]
     relay_psk: String,
+    /// The API key third-party OpenAI-compatible clients present to the
+    /// relay's HTTP endpoint (spec §11). Unlike `bearer_token` (which
+    /// never leaves this machine) this one is handed to other people's
+    /// software, so it is regenerable independently and the relay only
+    /// ever learns its SHA-256.
+    #[serde(default)]
+    openai_api_key: String,
 }
 
 fn secrets_path(app: &AppHandle<Wry>) -> Result<PathBuf, String> {
@@ -101,6 +108,48 @@ pub fn regenerate_bearer_token(app: &AppHandle<Wry>) -> Result<String, String> {
     secrets.bearer_token = generate_token();
     store(app, &secrets)?;
     Ok(secrets.bearer_token)
+}
+
+/// `41t_` is the 41tunnels key prefix — the same convention as Stripe's
+/// `sk_`, GitHub's `ghp_`, and Slack's `xoxb-`.
+///
+/// The prefix earns its four characters mainly through secret scanning:
+/// these keys are pasted into *other people's* config files (`.cursor/`,
+/// `.continue/config.json`, compose files) which routinely get committed,
+/// and a fixed prefix plus known length is a pattern GitHub push
+/// protection and gitleaks can match. A bare base64 blob is unmatchable,
+/// so a leak would simply sit in a public repo unnoticed. It also lets a
+/// user tell this apart from an OpenAI `sk-` key at a glance, and makes a
+/// key recognizable in a support screenshot.
+///
+/// Nothing depends on the prefix: the relay hashes whatever string
+/// arrives and never inspects its shape, and path disambiguation comes
+/// from the reserved-segment check, not from this. 32 random bytes is
+/// well past the 128-bit floor a publicly-reachable credential needs.
+fn generate_openai_key() -> String {
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    format!("41t_{}", b64.encode(generate_bytes::<32>()))
+}
+
+/// Load the OpenAI-endpoint API key, generating and persisting one on
+/// first use.
+pub fn get_or_create_openai_key(app: &AppHandle<Wry>) -> Result<String, String> {
+    let mut secrets = load(app)?;
+    if secrets.openai_api_key.is_empty() {
+        secrets.openai_api_key = generate_openai_key();
+        store(app, &secrets)?;
+    }
+    Ok(secrets.openai_api_key)
+}
+
+/// Replace the OpenAI-endpoint API key. Every client configured with the
+/// old key stops working as soon as amallo reconnects with the new hash —
+/// which is the point: this is the revoke button for a leaked key.
+pub fn regenerate_openai_key(app: &AppHandle<Wry>) -> Result<String, String> {
+    let mut secrets = load(app)?;
+    secrets.openai_api_key = generate_openai_key();
+    store(app, &secrets)?;
+    Ok(secrets.openai_api_key)
 }
 
 fn generate_bytes<const N: usize>() -> [u8; N] {

@@ -82,6 +82,19 @@ label.inline {
   font-weight: 400;
 }
 
+/* For the one setting whose trade-off a user has to read before enabling
+   it — the OpenAI endpoint gives up end-to-end encryption by necessity,
+   and that must not look like ordinary hint text. */
+.warn {
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid #d97706;
+  border-radius: 4px;
+  background: rgba(217, 119, 6, 0.08);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
 .row {
   display: flex;
   gap: 6px;
