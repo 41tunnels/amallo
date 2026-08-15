@@ -556,9 +556,29 @@ where
                             _ => Vec::new(),
                         };
                         for payload in buffered {
-                            let plaintext = opener
-                                .open(&CIPHERTEXT_HEADER, &payload)
-                                .map_err(|e| format!("aead open (buffered): {}", crypto::error_code(e)))?;
+                            // Unlike a frame that arrives *after* the
+                            // session is installed, one held from before
+                            // it is not necessarily meant for it: a peer
+                            // that was mid-request when a redial displaced
+                            // the previous connection can have sealed
+                            // these under the session that just died, and
+                            // they land here carrying that session's
+                            // counter. Dropping those is both safe (they
+                            // failed to authenticate, so nothing is acted
+                            // on) and necessary — treating them as fatal
+                            // would kill a healthy connection over frames
+                            // the peer has already given up on, and cost
+                            // the user a full reconnect on both ends.
+                            let plaintext = match opener.open(&CIPHERTEXT_HEADER, &payload) {
+                                Ok(plaintext) => plaintext,
+                                Err(e) => {
+                                    eprintln!(
+                                        "amallo: relay: dropping a frame held from the previous session: {}",
+                                        crypto::error_code(e)
+                                    );
+                                    continue;
+                                }
+                            };
                             for frame in wire::decode_inner_all(&plaintext).map_err(|e| e.to_string())? {
                                 dispatcher.handle(frame).await;
                             }
