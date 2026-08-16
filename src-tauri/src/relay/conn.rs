@@ -79,6 +79,23 @@ struct ControlMsg {
     code: String,
 }
 
+/// Why a connection ended, as far as the supervisor is concerned.
+///
+/// The distinction exists because one of the two is not a failure at all:
+/// [`ConnEnd::Redial`] is this connection asking to be replaced *now*,
+/// which must not be paid for with backoff or a visible offline blip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnEnd {
+    /// An ordinary end — the relay went away, the socket closed, or a
+    /// `going_away` arrived. The supervisor reconnects with backoff.
+    Closed,
+    /// The hello needs to be re-sent because a lane this socket does not
+    /// carry has been switched on. Only the hello can create the HTTP
+    /// lane (spec §11.3), so there is nothing to publish in place and the
+    /// supervisor should redial immediately — see [`run_reader_dual`].
+    Redial,
+}
+
 // --- real (encrypted) path ---------------------------------------------
 
 /// Commands to the single writer task. Everything that reaches the
@@ -181,6 +198,10 @@ fn rekey_payload(api_key: Option<&str>) -> Vec<u8> {
 /// published while the connection is up are forwarded as a `rekey`
 /// control rather than forcing a reconnect (spec §11.3), so rotating a
 /// key or toggling the endpoint never interrupts a paired browser.
+///
+/// The one exception is a connection that helloed *without* a key: it has
+/// no HTTP lane for a `rekey` to act on, so switching the endpoint on
+/// returns [`ConnEnd::Redial`] instead. See [`run_reader_dual`].
 pub async fn run_once(
     app: &AppHandle<Wry>,
     relay_url: &str,
@@ -189,7 +210,7 @@ pub async fn run_once(
     router: Router,
     bearer_token: String,
     api_key_rx: watch::Receiver<Option<String>>,
-) -> Result<(), String> {
+) -> Result<ConnEnd, String> {
     run_once_with_status(relay_url, pair_id, psk, router, bearer_token, api_key_rx, |status| {
         set_status(app, status)
     })
@@ -210,7 +231,7 @@ pub async fn run_once_with_status(
     bearer_token: String,
     mut api_key_rx: watch::Receiver<Option<String>>,
     on_status: impl Fn(RelayStatus),
-) -> Result<(), String> {
+) -> Result<ConnEnd, String> {
     let url = format!("{}/v1/agent", relay_url.trim_end_matches('/'));
     let (ws_stream, _) = connect_async(&url)
         .await
@@ -480,12 +501,21 @@ async fn run_reader_dual<S, F>(
     ctx: ConnCtx<'_, F>,
     api_key_rx: &mut watch::Receiver<Option<String>>,
     initial_key: Option<String>,
-) -> Result<(), String>
+) -> Result<ConnEnd, String>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     F: Fn(RelayStatus),
 {
     let mut session = Session::Idle;
+    // Whether the hello asked for the HTTP lane, and so whether the relay
+    // has anything for a `rekey` to re-index. A connection that helloed
+    // without a key is a plain E2E agent as far as the relay is
+    // concerned, and spec §11.3 has it *ignore* a rekey arriving there —
+    // which is why switching the endpoint on has to redial rather than
+    // publish. Once the lane exists it stays for the socket's life:
+    // switching off unregisters the entry but keeps it rekeyable, so
+    // off/on cycles and key rotation still cost nothing.
+    let has_http_lane = initial_key.is_some();
     // What the hello published. Kept in step with the watch so a 0x03
     // frame is only served while the endpoint is actually on.
     let mut api_key = initial_key;
@@ -515,9 +545,26 @@ where
                     continue;
                 }
                 api_key = api_key_rx.borrow_and_update().clone();
+                if !has_http_lane {
+                    // Nothing to rekey: this socket helloed as a plain E2E
+                    // agent. Turning the endpoint *on* needs a new hello,
+                    // so hand back to the supervisor to redial at once —
+                    // without this the user is left with an endpoint the
+                    // UI calls enabled and the relay answers 401 for,
+                    // until something else happens to reconnect.
+                    if api_key.is_some() {
+                        println!(
+                            "amallo: relay: openai endpoint switched on; redialling to publish it"
+                        );
+                        return Ok(ConnEnd::Redial);
+                    }
+                    // Switched off on a connection that never had the
+                    // lane — already the state the relay is in.
+                    continue;
+                }
                 let payload = rekey_payload(api_key.as_deref());
                 if ctx.cmd_tx.send(WriterCmd::Control(payload)).await.is_err() {
-                    return Ok(());
+                    return Ok(ConnEnd::Closed);
                 }
                 match &api_key {
                     Some(_) => println!("amallo: relay: openai endpoint key republished"),
@@ -544,7 +591,7 @@ where
                         );
                         let up = WriterCmd::SessionUp { sealer: Box::new(sealer), frames: frames_rx };
                         if ctx.cmd_tx.send(up).await.is_err() {
-                            return Ok(());
+                            return Ok(ConnEnd::Closed);
                         }
 
                         // Anything the peer sent between verifying our
@@ -603,10 +650,10 @@ where
             }
 
             incoming = read.next() => {
-                let Some(msg) = incoming else { return Ok(()) };
+                let Some(msg) = incoming else { return Ok(ConnEnd::Closed) };
                 match msg.map_err(|e| format!("read: {e}"))? {
                     Message::Binary(data) => data,
-                    Message::Close(_) => return Ok(()),
+                    Message::Close(_) => return Ok(ConnEnd::Closed),
                     // The relay pings every ~30s (spec §7) and an idle
                     // connection now routinely outlives many of those.
                     Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
@@ -634,7 +681,7 @@ where
                 // The relay is going down; the supervisor reconnects.
                 Some("going_away") => {
                     println!("amallo: relay: shutting down, will reconnect");
-                    return Ok(());
+                    return Ok(ConnEnd::Closed);
                 }
                 _ => log_control(payload),
             }

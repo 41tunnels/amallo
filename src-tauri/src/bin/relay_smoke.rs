@@ -9,15 +9,22 @@
 //! Passing an API key as the second argument opens the connection in
 //! dual mode, so both lanes ride the one socket: the E2E pairing as
 //! before, plus the OpenAI-compatible endpoint reachable at
-//! `http(s)://<relay-host>/<api_key>/v1/...`.
+//! `http(s)://<relay-host>/<api_key>/v1/...`. The literal `off` starts
+//! with no key at all, as amallo does when the endpoint is disabled.
 //!
 //! A third argument exercises the in-place rekey (spec §11.3): after a
 //! short delay the key is republished as that value — or withdrawn
 //! entirely, if it is the literal `off` — on the live connection, with no
 //! reconnect. The paired session must survive it.
 //!
+//! Starting `off` and rekeying *to* a key is the one case a rekey cannot
+//! carry, since the HTTP lane is created by the hello: the connection
+//! ends with `ConnEnd::Redial` and the loop below redials, mirroring
+//! `relay::supervise`. That is what makes enabling the endpoint in the
+//! app take effect without a manual disconnect.
+//!
 //! Not wired into any build/test target — run directly:
-//!   cargo run --bin relay_smoke [relay_url] [api_key] [rekey_to|off]
+//!   cargo run --bin relay_smoke [relay_url] [api_key|off] [rekey_to|off]
 
 use amallo_lib::relay::conn;
 use axum::routing::get;
@@ -34,7 +41,10 @@ async fn main() {
     let relay_url = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "wss://amallo-relay.tehfonsi.com".to_string());
-    let api_key = std::env::args().nth(2);
+    // `off` means "start as amallo does with the endpoint disabled": no
+    // key, so the hello omits `mode:"dual"` and the socket gets no HTTP
+    // lane.
+    let api_key = std::env::args().nth(2).filter(|k| k != "off");
 
     let mut pair_id = [0u8; 16];
     let mut psk = [0u8; 32];
@@ -82,19 +92,29 @@ async fn main() {
         None => drop(key_tx),
     }
 
-    let result = conn::run_once_with_status(
-        &relay_url,
-        pair_id,
-        psk,
-        router,
-        "smoke-bearer".to_string(),
-        key_rx,
-        |status| eprintln!("relay_smoke: status -> {status:?}"),
-    )
-    .await;
+    // A cut-down `relay::supervise`: enough of a loop to follow a
+    // `Redial` through, with none of the backoff — a redial is a user
+    // action, and this binary is not here to survive a flapping relay.
+    loop {
+        let result = conn::run_once_with_status(
+            &relay_url,
+            pair_id,
+            psk,
+            router.clone(),
+            "smoke-bearer".to_string(),
+            key_rx.clone(),
+            |status| eprintln!("relay_smoke: status -> {status:?}"),
+        )
+        .await;
 
-    match result {
-        Ok(()) => eprintln!("relay_smoke: session ended cleanly"),
-        Err(e) => eprintln!("relay_smoke: session ended with error: {e}"),
+        match result {
+            Ok(conn::ConnEnd::Redial) => {
+                eprintln!("relay_smoke: redialling to publish the openai endpoint");
+                continue;
+            }
+            Ok(conn::ConnEnd::Closed) => eprintln!("relay_smoke: session ended cleanly"),
+            Err(e) => eprintln!("relay_smoke: session ended with error: {e}"),
+        }
+        break;
     }
 }

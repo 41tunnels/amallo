@@ -9,10 +9,17 @@
 //!
 //! There is exactly one supervised connection. The OpenAI-compatible
 //! endpoint (spec §11) rides the same socket as a second lane rather than
-//! dialling its own — see `conn`'s module docs. That is why enabling or
-//! disabling it, or rotating its key, currently goes through `respawn`:
-//! the token hash is published in the hello, so changing it means a new
-//! hello. Making that in-place is the next phase's job.
+//! dialling its own — see `conn`'s module docs. Enabling or disabling it,
+//! or rotating its key, is therefore published to the live connection as
+//! a `rekey` (spec §11.3) rather than going through `respawn`, so none of
+//! those interrupt a paired browser.
+//!
+//! The one case a `rekey` cannot cover is switching the endpoint *on*
+//! over a socket that helloed without it: the HTTP lane is created by the
+//! hello, and the relay ignores a `rekey` on a connection that has none.
+//! That connection ends with [`conn::ConnEnd::Redial`] and the supervisor
+//! below reconnects immediately, which is what makes enabling the
+//! endpoint take effect without the user disconnecting by hand.
 
 pub mod conn;
 pub mod crypto;
@@ -217,7 +224,16 @@ async fn supervise(
             api_key_rx.clone(),
         );
         match attempt.await {
-            Ok(()) => println!("amallo: relay: connection closed"),
+            // The connection asked to be replaced so its hello can carry
+            // a lane this one does not (the OpenAI endpoint was switched
+            // on). A user action, not a fault: redial straight away, and
+            // do not report Offline on the way — the reconnect is fast
+            // enough that a status blip would only read as a glitch.
+            Ok(conn::ConnEnd::Redial) => {
+                backoff = BACKOFF_BASE;
+                continue;
+            }
+            Ok(conn::ConnEnd::Closed) => println!("amallo: relay: connection closed"),
             Err(e) => eprintln!("amallo: relay: connection error: {e}"),
         }
         set_status(&app, RelayStatus::Offline);
