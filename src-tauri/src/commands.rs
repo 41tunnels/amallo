@@ -42,6 +42,7 @@ pub fn save_settings(
             None
         };
         state.relay_api_key.send_replace(key);
+        tray::refresh_openai_endpoint(&app, new_settings.openai_endpoint_enabled);
     }
     tray::refresh_relay(&app, &state.relay_status());
     Ok(())
@@ -124,7 +125,7 @@ pub fn regenerate_openai_key(
 /// including the ones that only accept a base URL. Clients that can send
 /// an `Authorization` header may use the key there instead and drop the
 /// path segment — the relay accepts both.
-fn openai_base_url(relay_url: &str, api_key: &str) -> String {
+pub(crate) fn openai_base_url(relay_url: &str, api_key: &str) -> String {
     let base = relay_url.trim_end_matches('/');
     let http = match base.strip_prefix("wss://") {
         Some(rest) => format!("https://{rest}"),
