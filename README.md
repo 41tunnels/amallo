@@ -81,7 +81,3 @@ Cross-platform releases are automated: pushing to `release/latest` runs [semanti
 ## License
 
 Copyright © tehfonsi. Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
-
----
-
-App logo by [Magnific](https://magnific.com).
