@@ -10,109 +10,192 @@
 
   <body>
     <main class="container">
-      <header>
-        <h1>Amallo</h1>
-        <p class="subtitle">Secure remote access to your local Ollama</p>
+      <header class="app-head">
+        <div class="lockup">
+          <span class="lockup__tile">
+            <svg width="16" height="16" viewBox="0 0 64 64" aria-hidden="true">
+              <path fill="currentColor" fill-rule="evenodd" d="M32 7 L32 27 L18.7 27 Z M12 39 L32 39 L32 51 L4 51 Z M44 7 H58 V27 H44 Z M44 39 H58 V51 H44 Z" />
+            </svg>
+          </span>
+          <span class="lockup__text">
+            <span class="lockup__name">Amallo</span>
+            <span class="lockup__by">a 41tunnels project</span>
+          </span>
+        </div>
+        <span id="relay-status" class="t-status disabled">
+          <span class="t-status__dot"></span>
+          <span id="relay-status-text">Relay disabled</span>
+        </span>
       </header>
 
-      <section class="card">
-        <h2>Pairing</h2>
-        <p class="hint">
-          Scan this from OpenCharUI web (Settings → Remote access) to chat with Ollama from
-          anywhere — no network setup required.
-        </p>
-        <div class="qr-wrap">
-          <div id="pairing-qr" class="qr"></div>
+      <section class="t-card t-card--dense">
+        <div class="card__head">
+          <h2 class="card__title">Pair a device</h2>
+          <button id="toggle-relay" class="t-btn t-btn--secondary t-btn--sm" type="button">Connect Relay</button>
         </div>
-
-        <label for="pairing-code">Pairing code <span class="hint">(or paste this instead of scanning)</span></label>
-        <div class="row">
-          <input id="pairing-code" type="text" readonly />
-          <button id="copy-pairing-code" type="button">Copy</button>
-          <button id="regen-pairing" type="button" title="Invalidates every paired device">↻</button>
-        </div>
-
-        <label for="relay-url">Relay URL <span class="hint">(advanced — leave default unless self-hosting)</span></label>
-        <input id="relay-url" type="text" spellcheck="false" />
-
-        <label class="checkbox">
-          <input id="auto-connect-relay" type="checkbox" />
-          Connect to the relay automatically on launch
-        </label>
-
-        <footer id="relay-status" class="status disabled">Relay: disabled</footer>
-        <button id="toggle-relay" type="button">Connect Relay</button>
-      </section>
-
-      <section class="card">
-        <h2>OpenAI-compatible endpoint</h2>
-        <p class="hint">
-          Use this machine's Ollama from any OpenAI-compatible app — Open WebUI, Cursor,
-          Continue, LibreChat, or an SDK. Paste both values below into the app's OpenAI settings.
-        </p>
-        <p class="warn">
-          Unlike pairing, this path is <strong>not end-to-end encrypted</strong>: the relay
-          can read prompts and replies. Anyone holding the key can use this machine's GPU.
-          Only model listing and inference are reachable — never model downloads or deletion.
+        <p class="card__note">
+          Scan from OpenCharUI on your phone. Traffic stays end-to-end encrypted —
+          the relay only forwards it.
         </p>
 
-        <label class="checkbox">
-          <input id="openai-enabled" type="checkbox" />
-          Enable the OpenAI-compatible endpoint
-        </label>
+        <div class="pair">
+          <div class="qr"><div id="pairing-qr" class="qr__img"></div></div>
+          <div class="pair__col">
+            <div class="t-field">
+              <span class="t-field__label">Pairing code</span>
+              <div class="t-cred">
+                <input id="pairing-code" class="t-cred__value" type="text" readonly />
+                <button id="copy-pairing-code" class="t-iconbtn" type="button" aria-label="Copy pairing code">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1"/></svg>
+                </button>
+                <button id="regen-pairing" class="t-iconbtn" type="button" aria-label="Regenerate pairing code — invalidates every paired device" title="Regenerate — invalidates every paired device">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-3.97"/><path d="M13.7 1.8v3.1h-3.1"/></svg>
+                </button>
+              </div>
+              <span class="t-field__hint">or paste it instead of scanning</span>
+            </div>
 
-        <div id="openai-details" hidden>
-          <label for="openai-base-url">Base URL</label>
-          <div class="row">
-            <input id="openai-base-url" type="text" readonly />
-            <button id="copy-openai-url" type="button">Copy</button>
-          </div>
-
-          <label for="openai-key">API key <span class="hint">(paste into the app's API key field as well)</span></label>
-          <div class="row">
-            <input id="openai-key" type="text" readonly />
-            <button id="copy-openai-key" type="button">Copy</button>
-            <button id="regen-openai-key" type="button" title="Revokes the old key immediately">↻</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Proxy</h2>
-        <div class="row">
-          <label for="proxy-port" class="inline">Local port</label>
-          <input id="proxy-port" type="number" min="1024" max="65535" />
-        </div>
-        <label class="checkbox">
-          <input id="bind-lan" type="checkbox" />
-          Allow LAN access (bind to 0.0.0.0)
-        </label>
-
-        <div id="lan-url-row">
-          <label for="lan-url">LAN URL <span class="hint">(use this from another device on your network)</span></label>
-          <div class="row">
-            <input id="lan-url" type="text" readonly />
-            <button id="copy-lan-url" type="button">Copy</button>
+            <label class="t-switch">
+              <input id="auto-connect-relay" type="checkbox" role="switch" />
+              <span class="t-switch__track" aria-hidden="true"><span class="t-switch__thumb"></span></span>
+              <span>Connect on launch</span>
+            </label>
           </div>
         </div>
 
-        <label for="bearer-token">Bearer token <span class="hint">(clients send this as API key)</span></label>
-        <div class="row">
-          <input id="bearer-token" type="text" readonly />
-          <button id="copy-bearer" type="button">Copy</button>
-          <button id="regen-bearer" type="button" title="Invalidates the old token immediately">↻</button>
+        <details>
+          <summary>
+            <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M2 1l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            Relay server
+          </summary>
+          <div class="details__body">
+            <div class="t-field">
+              <span class="t-field__label">Relay URL</span>
+              <input id="relay-url" class="t-input" type="text" spellcheck="false" />
+              <span class="t-field__hint">changing this re-issues the pairing code above</span>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="t-card t-card--dense">
+        <div class="card__head">
+          <h2 class="card__title">OpenAI-compatible endpoint</h2>
+          <label class="t-switch">
+            <input id="openai-enabled" type="checkbox" role="switch" aria-label="Enable the OpenAI-compatible endpoint" />
+            <span class="t-switch__track" aria-hidden="true"><span class="t-switch__thumb"></span></span>
+          </label>
+        </div>
+        <p class="card__note">
+          Use this machine's Ollama from Open WebUI, Cursor, Continue, LibreChat, or an SDK.
+        </p>
+
+        <div class="t-notice">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 1.8 15 14H1z" stroke-linejoin="round"/><path d="M8 6.4v3.2"/><path d="M8 11.6v.1"/></svg>
+          <span>
+            <b>Not end-to-end encrypted.</b> The relay can read prompts and replies, and
+            anyone holding the key can use this machine's GPU. Only model listing and
+            inference are reachable — never model downloads or deletion.
+          </span>
+        </div>
+
+        <div id="openai-details" class="pair__col">
+          <div class="t-field">
+            <span class="t-field__label">Base URL</span>
+            <div class="t-cred">
+              <input id="openai-base-url" class="t-cred__value" type="text" readonly />
+              <button id="copy-openai-url" class="t-iconbtn" type="button" aria-label="Copy base URL">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="t-field">
+            <span class="t-field__label">API key</span>
+            <div class="t-cred">
+              <input id="openai-key" class="t-cred__value" type="text" readonly />
+              <button id="copy-openai-key" class="t-iconbtn" type="button" aria-label="Copy API key">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1"/></svg>
+              </button>
+              <button id="regen-openai-key" class="t-iconbtn" type="button" aria-label="Regenerate API key — breaks every app configured with the old key" title="Regenerate — breaks every app configured with the old key">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-3.97"/><path d="M13.7 1.8v3.1h-3.1"/></svg>
+              </button>
+            </div>
+            <span class="t-field__hint">paste into the app's API key field as well</span>
+          </div>
         </div>
       </section>
 
-      <section class="card">
-        <h2>Behavior</h2>
-        <label class="checkbox">
-          <input id="autostart" type="checkbox" />
-          Launch Amallo at login
-        </label>
+      <section class="t-card t-card--dense">
+        <div class="card__head">
+          <h2 class="card__title">Local network</h2>
+        </div>
+
+        <div class="set">
+          <span>
+            <span class="set__name">Reachable from this network</span>
+            <span class="set__hint">binds 0.0.0.0 instead of localhost</span>
+          </span>
+          <label class="t-switch">
+            <input id="bind-lan" type="checkbox" role="switch" aria-label="Reachable from this network" />
+            <span class="t-switch__track" aria-hidden="true"><span class="t-switch__thumb"></span></span>
+          </label>
+        </div>
+
+        <div id="lan-url-row" class="pair__col" hidden>
+          <div class="t-field">
+            <span class="t-field__label">Address</span>
+            <div class="t-cred">
+              <input id="lan-url" class="t-cred__value" type="text" readonly />
+              <button id="copy-lan-url" class="t-iconbtn" type="button" aria-label="Copy address">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="t-field">
+          <span class="t-field__label">Bearer token</span>
+          <div class="t-cred">
+            <input id="bearer-token" class="t-cred__value" type="text" readonly />
+            <button id="copy-bearer" class="t-iconbtn" type="button" aria-label="Copy bearer token">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1 1 0 0 0-1-1h-7a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h1"/></svg>
+            </button>
+            <button id="regen-bearer" class="t-iconbtn" type="button" aria-label="Regenerate bearer token — invalidates the old token immediately" title="Regenerate — invalidates the old token immediately">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.7-3.97"/><path d="M13.7 1.8v3.1h-3.1"/></svg>
+            </button>
+          </div>
+          <span class="t-field__hint">clients send this as their API key</span>
+        </div>
+
+        <details>
+          <summary>
+            <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true"><path d="M2 1l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            Port
+          </summary>
+          <div class="details__body">
+            <div class="set">
+              <span>
+                <span class="set__name">Listen on port</span>
+                <span class="set__hint">1024–65535</span>
+              </span>
+              <input id="proxy-port" class="t-input t-input--port" type="number" min="1024" max="65535" aria-label="Listen on port" />
+            </div>
+          </div>
+        </details>
       </section>
 
-      <p class="autosave-hint">Changes are saved automatically.</p>
+      <section class="t-card t-card--dense">
+        <div class="set">
+          <span>
+            <span class="set__name">Launch Amallo at login</span>
+            <span class="set__hint">starts hidden in the tray</span>
+          </span>
+          <label class="t-switch">
+            <input id="autostart" type="checkbox" role="switch" aria-label="Launch Amallo at login" />
+            <span class="t-switch__track" aria-hidden="true"><span class="t-switch__thumb"></span></span>
+          </label>
+        </div>
+      </section>
     </main>
   </body>
 </html>

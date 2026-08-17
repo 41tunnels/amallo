@@ -1,26 +1,130 @@
+/* ==========================================================
+   Fonts — IBM Plex Sans (variable, 100–700) + IBM Plex Mono
+   (regular). Self-hosted from src/fonts/, same two faces the
+   41tunnels website build serves from its own origin.
+   IBM Plex Sans + IBM Plex Mono — SIL OFL 1.1, free for
+   commercial use.
+   ========================================================== */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("./fonts/ibm-plex-sans-variable.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/ibm-plex-mono-regular.woff2") format("woff2");
+}
+
+/* ==========================================================
+   41tunnels Design System — tokens, verbatim from
+   claude.ai/design (4dabf874-bc30-40dc-a17b-ca447c5dfd31).
+   Semantic aliases resolve per `prefers-color-scheme`: Amallo
+   is a single native window with no in-app theme toggle, so
+   there's nothing to pin — it just follows the OS, the same
+   mechanism this file already used pre-redesign.
+   ========================================================== */
 :root {
-  --bg: #f6f6f7;
-  --card: #ffffff;
-  --text: #1c1c1e;
-  --muted: #6e6e73;
-  --border: #d2d2d7;
-  --accent: #0a84ff;
-  --ok: #30d158;
-  --warn: #ff9f0a;
-  --err: #ff453a;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 13px;
-  color: var(--text);
-  background: var(--bg);
+  /* ---- base ---- */
+  --ink-900: #0E1113;
+  --ink-800: #14181A;
+  --ink-700: #1B1F21;
+  --ink-600: #262B2E;
+  --ink-500: #3A4043;
+  --ink-400: #4E5558;
+  --ink-300: #7C8487;
+  --ink-200: #9AA1A4;
+  --ink-100: #C9CDCE;
+
+  --paper-000: #FFFFFF;
+  --paper-100: #F7F6F3;
+  --paper-200: #EDEAE4;
+  --paper-300: #E4E0D9;
+  --paper-400: #D6D1C8;
+  --slate-600: #5F6A6E;
+  --slate-700: #3C4448;
+
+  --copper-600: #8E4A20;
+  --copper-500: #B4602C;
+  --copper-400: #E08B4D;
+  --copper-050: #F4E7DC;
+
+  --status-ok: #4E7A52;
+  --status-ok-dark: #86B98B;
+  --status-warn: #9A7420;
+  --status-warn-dark: #D6AE4E;
+  --status-off: #9AA1A4;
+
+  /* ---- spacing ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 22px;
+  --space-6: 28px;
+
+  /* ---- shape ---- */
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-3: 10px;
+  --radius-pill: 999px;
+  --border-width: 1px;
+
+  /* ---- type ---- */
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --text-mono: 12.5px;
+  --text-mono-sm: 11px;
+  --text-mono-ls: 0.01em;
+  --text-eyebrow-ls: 0.06em;
+
+  /* ---- motion ---- */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 90ms;
+  --transition-ui: color var(--dur-fast) var(--ease-standard),
+                   background-color var(--dur-fast) var(--ease-standard),
+                   border-color var(--dur-fast) var(--ease-standard),
+                   opacity var(--dur-fast) var(--ease-standard);
+
+  /* ---- semantic aliases: light (default) ---- */
+  --surface-page: var(--paper-100);
+  --surface-card: var(--paper-000);
+  --surface-inset: var(--paper-200);
+  --border-hairline: var(--paper-300);
+  --border-strong: var(--paper-400);
+  --text-body: var(--slate-700);
+  --text-strong: var(--ink-800);
+  --text-muted: var(--slate-600);
+  --text-faint: #9AA1A4;
+  --focus-ring: var(--copper-500);
+  --status-live: var(--status-ok);
+  --status-hold: var(--status-warn);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; }
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1e1e20;
-    --card: #2a2a2d;
-    --text: #f2f2f7;
-    --muted: #98989d;
-    --border: #3d3d41;
+    --surface-page: var(--ink-800);
+    --surface-card: var(--ink-700);
+    --surface-inset: var(--ink-900);
+    --border-hairline: var(--ink-600);
+    --border-strong: var(--ink-500);
+    --text-body: var(--ink-100);
+    --text-strong: var(--paper-100);
+    --text-muted: var(--ink-200);
+    --text-faint: var(--ink-400);
+    --focus-ring: var(--copper-400);
+    --status-live: var(--status-ok-dark);
+    --status-hold: var(--status-warn-dark);
   }
 }
 
@@ -29,218 +133,170 @@
   margin: 0;
 }
 
+/* Without this, an element that's both `hidden` and `display: flex` (e.g.
+   .pair__col) stays visible: the class and the UA [hidden] rule tie on
+   specificity, and author origin beats user-agent origin regardless. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   user-select: none;
   -webkit-user-select: none;
+  background: var(--surface-page);
+  color: var(--text-body);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 .container {
-  padding: 16px;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
-header h1 {
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.subtitle {
-  color: var(--muted);
-  margin-top: 2px;
-}
-
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
+/* ---- header lockup ---- */
+.app-head {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: var(--border-width) solid var(--border-hairline);
 }
+.lockup { display: flex; align-items: center; gap: var(--space-2); flex: none; }
+.lockup__tile {
+  width: 26px; height: 26px; flex: none; border-radius: var(--radius-2);
+  background: var(--surface-inset); display: grid; place-items: center; color: var(--text-strong);
+}
+.lockup__text { display: flex; flex-direction: column; gap: 3px; }
+.lockup__name { font-size: 15px; font-weight: var(--weight-semibold); letter-spacing: -0.01em; color: var(--text-strong); line-height: 1; }
+.lockup__by { font-family: var(--font-mono); font-size: var(--text-mono-sm); color: var(--text-muted); line-height: 1; }
 
-.card h2 {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
+/* ---- StatusDot ---- */
+.t-status {
+  display: inline-flex; align-items: flex-start; gap: var(--space-2);
+  font-family: var(--font-mono); font-size: var(--text-mono); color: var(--text-muted);
+  min-width: 0; overflow-wrap: anywhere; padding-top: 2px;
 }
+.t-status__dot { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: var(--status-off); flex: none; }
+.t-status.online .t-status__dot { background: var(--status-live); }
+.t-status.connecting .t-status__dot,
+.t-status.waiting .t-status__dot,
+.t-status.offline .t-status__dot,
+.t-status.error .t-status__dot { background: var(--status-hold); }
 
-label {
-  font-weight: 500;
-}
+/* ---- Card ---- */
+.t-card { background: var(--surface-card); border: var(--border-width) solid var(--border-hairline); border-radius: var(--radius-3); }
+.t-card--dense { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.card__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.card__title { font-size: 14px; font-weight: var(--weight-semibold); color: var(--text-strong); letter-spacing: -0.005em; margin: 0; }
+.card__note { font-size: 13px; line-height: 1.5; color: var(--text-muted); margin: 0; }
 
-label.inline {
-  flex: 1;
+/* ---- Button / IconButton ---- */
+.t-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  font-family: var(--font-sans); font-size: 13px; font-weight: var(--weight-medium);
+  line-height: 1; padding: 7px 12px; border-radius: var(--radius-1);
+  border: var(--border-width) solid transparent; cursor: pointer;
+  transition: var(--transition-ui); white-space: nowrap; background: none; color: inherit;
 }
+.t-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.t-btn--secondary { background: transparent; color: var(--text-strong); border-color: var(--border-strong); }
+.t-btn--secondary:hover { background: var(--surface-inset); }
 
-.hint {
-  color: var(--muted);
-  font-weight: 400;
+.t-iconbtn {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  border-radius: var(--radius-1); border: var(--border-width) solid transparent;
+  background: transparent; color: var(--text-muted); cursor: pointer; transition: var(--transition-ui);
 }
+.t-iconbtn:hover { background: var(--surface-inset); color: var(--text-strong); }
+.t-iconbtn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
-/* For the one setting whose trade-off a user has to read before enabling
-   it — the OpenAI endpoint gives up end-to-end encryption by necessity,
-   and that must not look like ordinary hint text. */
-.warn {
-  margin: 0 0 0.75rem;
-  padding: 0.6rem 0.75rem;
-  border-left: 3px solid #d97706;
-  border-radius: 4px;
-  background: rgba(217, 119, 6, 0.08);
-  font-size: 0.85rem;
-  line-height: 1.45;
+/* ---- Field / Input ---- */
+.t-field { display: flex; flex-direction: column; gap: 6px; }
+.t-field__label { font-family: var(--font-mono); font-size: var(--text-mono-sm); letter-spacing: var(--text-eyebrow-ls); text-transform: uppercase; color: var(--text-muted); }
+/* --text-muted, not the shipped component's --text-faint: faint on
+   --surface-card measures 2.62:1 (light) / 2.19:1 (dark) — under the AA
+   floor. Muted measures 5.57:1 / 6.33:1. */
+.t-field__hint { font-family: var(--font-mono); font-size: var(--text-mono-sm); color: var(--text-muted); }
+.t-input {
+  font-family: var(--font-mono); font-size: var(--text-mono); color: var(--text-strong);
+  background: var(--surface-card); border: var(--border-width) solid var(--border-hairline);
+  border-radius: var(--radius-1); padding: 8px 10px; width: 100%; transition: var(--transition-ui);
 }
+.t-input:focus { outline: 2px solid var(--focus-ring); outline-offset: -1px; border-color: transparent; }
+.t-input--port { width: 88px; }
 
-.row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+/* ---- Switch ---- */
+.t-switch { display: inline-flex; align-items: center; gap: var(--space-3); cursor: pointer; font-size: 13px; color: var(--text-body); }
+.t-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.t-switch__track {
+  width: 34px; height: 20px; flex: none; border-radius: var(--radius-pill);
+  background: var(--border-strong); position: relative; transition: background-color var(--dur-fast) var(--ease-standard);
 }
+.t-switch__thumb {
+  position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--surface-card); transition: transform var(--dur-fast) var(--ease-standard);
+}
+.t-switch[data-checked="true"] .t-switch__track { background: var(--text-strong); }
+.t-switch[data-checked="true"] .t-switch__thumb { transform: translateX(14px); }
+.t-switch input:focus-visible ~ .t-switch__track { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
-.row input {
-  flex: 1;
+/* ---- CredentialField ----
+   Not in the shipped system — a read-only secret with copy/rotate welded
+   to it. Tokens only, so it needs no dark-mode override of its own. */
+.t-cred { display: flex; align-items: stretch; background: var(--surface-inset); border: var(--border-width) solid var(--border-hairline); border-radius: var(--radius-1); overflow: hidden; }
+.t-cred__value {
+  flex: 1; min-width: 0; padding: 0 10px; border: 0; background: transparent;
+  font-family: var(--font-mono); font-size: var(--text-mono); letter-spacing: var(--text-mono-ls);
+  color: var(--text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: text; -webkit-user-select: text;
 }
+.t-cred__value:focus { outline: none; }
+.t-cred .t-iconbtn { width: 32px; height: auto; border-radius: 0; border-left: var(--border-width) solid var(--border-hairline); }
 
-input[type="text"],
-input[type="password"],
-input[type="number"] {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  min-width: 0;
-  user-select: text;
-  -webkit-user-select: text;
-}
+/* ---- Notice ----
+   Not in the shipped system either. Built on --status-warn/-dark rather
+   than copper: copper is the brand accent (links, tags), so a
+   copper-tinted block would read as emphasis, not caution. */
+.t-notice { display: flex; gap: var(--space-3); padding: 10px var(--space-3); border-radius: var(--radius-1); border-left: 2px solid var(--status-hold); background: color-mix(in srgb, var(--status-hold) 11%, transparent); font-size: 12.5px; line-height: 1.5; color: var(--text-body); }
+.t-notice svg { flex: none; margin-top: 2px; color: var(--status-hold); }
+.t-notice b { font-weight: var(--weight-semibold); color: var(--text-strong); }
 
-input[type="number"] {
-  width: 90px;
-  flex: 0 0 auto;
-}
+/* ---- composition: setting row ---- */
+.set { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: var(--space-3); }
+.set__name { font-size: 13px; color: var(--text-body); }
+.set__hint { font-family: var(--font-mono); font-size: var(--text-mono-sm); color: var(--text-muted); margin-top: 2px; }
 
-input[readonly] {
-  color: var(--muted);
-}
-
-input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-
-.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 400;
-  cursor: pointer;
-}
-
-button {
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--card);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-button:hover {
-  border-color: var(--accent);
-}
-
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.actions {
-  display: flex;
-  gap: 8px;
-}
-
-.actions button {
-  flex: 1;
-}
-
-.status {
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-weight: 500;
-  text-align: center;
-  overflow-wrap: anywhere;
-}
-
-.status.connecting {
-  background: color-mix(in srgb, var(--warn) 18%, transparent);
-  color: var(--warn);
-}
-
-.status.online {
-  background: color-mix(in srgb, var(--ok) 18%, transparent);
-  color: var(--ok);
-}
-
-.status.error {
-  background: color-mix(in srgb, var(--err) 18%, transparent);
-  color: var(--err);
-}
-
-.status.disabled {
-  background: color-mix(in srgb, var(--muted) 15%, transparent);
-  color: var(--muted);
-}
-
-.status.waiting {
-  background: color-mix(in srgb, var(--warn) 18%, transparent);
-  color: var(--warn);
-}
-
-.status.offline {
-  background: color-mix(in srgb, var(--warn) 18%, transparent);
-  color: var(--warn);
-}
-
-.qr-wrap {
-  display: flex;
-  justify-content: center;
-}
+/* ---- pairing block ---- */
+.pair { display: grid; grid-template-columns: 108px 1fr; gap: var(--space-3); align-items: start; }
+.pair__col { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 
 /* Always white-on-white regardless of theme: a QR scanner needs real
    contrast between the modules and the quiet zone, and inverting a QR
-   code (dark mode's usual "flip everything") makes most scanners fail.
-   aspect-ratio keeps it square while width stretches to fill the card. */
-.qr {
-  background: #ffffff;
-  border-radius: 8px;
-  padding: 12px;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-}
+   code (dark mode's usual "flip everything") makes most scanners fail. */
+.qr { background: #ffffff; border-radius: var(--radius-2); padding: 8px; width: 108px; height: 108px; }
+.qr__img { width: 100%; height: 100%; }
+.qr__img svg { display: block; width: 100%; height: 100%; }
 
-.qr svg {
-  display: block;
-  width: 100%;
-  height: 100%;
+/* ---- disclosure ---- */
+details { border-top: var(--border-width) solid var(--border-hairline); padding-top: var(--space-3); }
+summary {
+  display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none;
+  font-family: var(--font-mono); font-size: var(--text-mono-sm); letter-spacing: var(--text-eyebrow-ls);
+  text-transform: uppercase; color: var(--text-muted);
 }
-
-.autosave-hint {
-  text-align: center;
-  color: var(--muted);
-  font-size: 11px;
-  margin-top: 2px;
-}
+summary::-webkit-details-marker { display: none; }
+summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 2px; }
+summary svg { transition: transform var(--dur-fast) var(--ease-standard); }
+details[open] summary svg { transform: rotate(90deg); }
+.details__body { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-3); }
 
 .just-saved {
-  outline: 2px solid var(--ok);
+  outline: 2px solid var(--status-live);
   outline-offset: 1px;
   border-radius: 4px;
   transition: outline-color 0.9s ease-out;

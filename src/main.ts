@@ -38,6 +38,7 @@ const pairingCode = $<HTMLInputElement>("pairing-code");
 const relayUrl = $<HTMLInputElement>("relay-url");
 const autoConnectRelay = $<HTMLInputElement>("auto-connect-relay");
 const relayStatusEl = $<HTMLElement>("relay-status");
+const relayStatusText = $<HTMLElement>("relay-status-text");
 const toggleRelayBtn = $<HTMLButtonElement>("toggle-relay");
 
 const openaiEnabled = $<HTMLInputElement>("openai-enabled");
@@ -49,30 +50,30 @@ let currentRelayStatus: RelayStatus = { state: "disabled" };
 
 function renderRelayStatus(status: RelayStatus) {
   currentRelayStatus = status;
-  relayStatusEl.className = `status ${status.state}`;
+  relayStatusEl.className = `t-status ${status.state}`;
   switch (status.state) {
     case "disabled":
-      relayStatusEl.textContent = "Relay: disabled";
+      relayStatusText.textContent = "Relay disabled";
       toggleRelayBtn.textContent = "Connect Relay";
       break;
     case "connecting":
-      relayStatusEl.textContent = "Relay: connecting…";
+      relayStatusText.textContent = "Connecting…";
       toggleRelayBtn.textContent = "Disconnect Relay";
       break;
     case "waiting":
-      relayStatusEl.textContent = "Relay: waiting for a device…";
+      relayStatusText.textContent = "Waiting for a device…";
       toggleRelayBtn.textContent = "Disconnect Relay";
       break;
     case "online":
-      relayStatusEl.textContent = "Relay: connected";
+      relayStatusText.textContent = "Relay connected";
       toggleRelayBtn.textContent = "Disconnect Relay";
       break;
     case "offline":
-      relayStatusEl.textContent = "Relay: offline, retrying…";
+      relayStatusText.textContent = "Offline, retrying…";
       toggleRelayBtn.textContent = "Disconnect Relay";
       break;
     case "error":
-      relayStatusEl.textContent = `Relay error: ${status.message}`;
+      relayStatusText.textContent = `Relay error: ${status.message}`;
       toggleRelayBtn.textContent = "Connect Relay";
       break;
   }
@@ -83,10 +84,31 @@ async function refreshPairing() {
   pairingQr.innerHTML = await invoke<string>("get_pairing_qr");
 }
 
-function flash(button: HTMLButtonElement, label: string) {
-  const original = button.textContent;
-  button.textContent = label;
-  setTimeout(() => (button.textContent = original), 1200);
+const COPIED_ICON =
+  '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8.4l3.2 3.2L13 4.8"/></svg>';
+
+// Copy buttons are icon-only, so "flash a confirmation" means swapping the
+// icon rather than the old text-button's label.
+function flashCopied(button: HTMLButtonElement) {
+  if (button.dataset.busy) return;
+  const originalHtml = button.innerHTML;
+  const originalLabel = button.getAttribute("aria-label");
+  button.dataset.busy = "1";
+  button.innerHTML = COPIED_ICON;
+  button.setAttribute("aria-label", "Copied");
+  setTimeout(() => {
+    button.innerHTML = originalHtml;
+    if (originalLabel) button.setAttribute("aria-label", originalLabel);
+    delete button.dataset.busy;
+  }, 1200);
+}
+
+// Switch tracks read their on/off visual from data-checked (the same
+// contract the design system's Switch component uses) rather than the
+// underlying, visually-hidden <input>, so it has to be kept in sync
+// whenever a switch's `checked` is set from JS instead of user input.
+function syncSwitch(input: HTMLInputElement) {
+  input.closest(".t-switch")?.setAttribute("data-checked", String(input.checked));
 }
 
 // The base URL embeds the API key (some clients accept only a base URL),
@@ -112,11 +134,13 @@ async function init() {
   relayUrl.value = settings.relay_url;
   autoConnectRelay.checked = settings.auto_connect_relay;
   openaiEnabled.checked = settings.openai_endpoint_enabled;
+  for (const el of [bindLan, autoConnectRelay, openaiEnabled]) syncSwitch(el);
 
   await refreshLanUrl();
   await refreshOpenAI();
   bearerToken.value = await invoke<string>("get_bearer_token");
   autostart.checked = await invoke<boolean>("get_autostart").catch(() => false);
+  syncSwitch(autostart);
   renderRelayStatus(await invoke<RelayStatus>("get_relay_status"));
   await refreshPairing();
 
@@ -127,12 +151,12 @@ async function init() {
 
 $<HTMLButtonElement>("copy-lan-url").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: lanUrl.value });
-  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+  flashCopied(e.currentTarget as HTMLButtonElement);
 });
 
 $<HTMLButtonElement>("copy-bearer").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: bearerToken.value });
-  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+  flashCopied(e.currentTarget as HTMLButtonElement);
 });
 
 $<HTMLButtonElement>("regen-bearer").addEventListener("click", async () => {
@@ -146,9 +170,12 @@ $<HTMLButtonElement>("regen-bearer").addEventListener("click", async () => {
 });
 
 // Settings persist automatically on change — no Save button to forget.
+// A switch's <input> is visually hidden, so the outline goes on its
+// .t-switch wrapper instead; plain inputs (relay URL, port) take it directly.
 function markSaved(el: HTMLElement) {
-  el.classList.add("just-saved");
-  setTimeout(() => el.classList.remove("just-saved"), 900);
+  const target = el.closest(".t-switch") ?? el;
+  target.classList.add("just-saved");
+  setTimeout(() => target.classList.remove("just-saved"), 900);
 }
 
 async function persistSettings(changed: HTMLElement) {
@@ -173,17 +200,20 @@ async function persistSettings(changed: HTMLElement) {
 }
 
 for (const el of [proxyPort, bindLan, relayUrl, autoConnectRelay, openaiEnabled]) {
-  el.addEventListener("change", () => persistSettings(el));
+  el.addEventListener("change", () => {
+    syncSwitch(el);
+    persistSettings(el);
+  });
 }
 
 $<HTMLButtonElement>("copy-openai-url").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: openaiBaseUrl.value });
-  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+  flashCopied(e.currentTarget as HTMLButtonElement);
 });
 
 $<HTMLButtonElement>("copy-openai-key").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: openaiKey.value });
-  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+  flashCopied(e.currentTarget as HTMLButtonElement);
 });
 
 $<HTMLButtonElement>("regen-openai-key").addEventListener("click", async () => {
@@ -198,13 +228,14 @@ $<HTMLButtonElement>("regen-openai-key").addEventListener("click", async () => {
 });
 
 autostart.addEventListener("change", async () => {
+  syncSwitch(autostart);
   await invoke("set_autostart", { enabled: autostart.checked }).catch(() => {});
   markSaved(autostart);
 });
 
 $<HTMLButtonElement>("copy-pairing-code").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: pairingCode.value });
-  flash(e.currentTarget as HTMLButtonElement, "Copied ✓");
+  flashCopied(e.currentTarget as HTMLButtonElement);
 });
 
 $<HTMLButtonElement>("regen-pairing").addEventListener("click", async () => {
