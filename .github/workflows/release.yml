@@ -61,10 +61,13 @@ jobs:
         include:
           - platform: macos-latest # arm64
             args: --target aarch64-apple-darwin
+            friendly: macos-arm64
           - platform: macos-latest # intel
             args: --target x86_64-apple-darwin
+            friendly: macos-x64
           - platform: windows-latest
             args: ""
+            friendly: windows-x64
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -97,6 +100,9 @@ jobs:
         with:
           tagName: v${{ needs.release.outputs.version }}
           args: ${{ matrix.args }}
-          # Includes [arch] (not just [platform]) so the two macOS matrix
-          # legs (arm64/intel) don't upload conflicting asset names.
-          assetNamePattern: "Amallo_[platform]_[arch]_[version][setup].[ext]"
+          # matrix.friendly (not tauri-action's own [platform]/[arch]
+          # tokens, which just echo the Rust target triple as "darwin"/
+          # "aarch64"/etc.) so downloads read as "macos-arm64" rather than
+          # requiring users to know Rust target-triple vocabulary. [setup]
+          # expands to "-setup" for the NSIS installer and "" otherwise.
+          assetNamePattern: "Amallo-[version]-${{ matrix.friendly }}[setup].[ext]"
