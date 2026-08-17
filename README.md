@@ -1,5 +1,7 @@
 # Amallo
 
+*A [41tunnels](https://41tunnels.com) project.*
+
 **Use the AI models on your own computer from anywhere — securely.**
 
 Amallo lets you keep [Ollama](https://ollama.com) and its language models running on your own Mac or PC, while still reaching them from your phone, another laptop, or a web app — wherever you happen to be. Your models and your conversations stay on your machine; Amallo simply opens a private, protected door to them over the internet.
@@ -78,6 +80,14 @@ Cross-platform releases are automated: pushing to `release/latest` runs [semanti
 - Regenerating the pairing code invalidates every device currently paired, including web, immediately.
 - Amallo assumes Ollama's default loopback host. A custom `OLLAMA_HOST` upstream isn't configurable yet.
 
+## 41tunnels
+
+Amallo is one of three products under the [41tunnels](https://41tunnels.com) umbrella — tools for using your own AI models from anywhere, privately, without handing your models or your conversations to a third-party provider:
+
+- **Amallo** (this repo) — the desktop agent that opens the door.
+- **Relay** — the self-hosted server that splices connections without ever reading them.
+- **OpenCharUI** — a browser roleplay chat app that pairs with Amallo to reach your own models.
+
 ## License
 
-Copyright © tehfonsi. Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
+Copyright © 41tunnels. Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
