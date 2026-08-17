@@ -2,10 +2,10 @@
 name = "amallo"
 version = "0.2.0"
 description = "Securely reach your local Ollama instance from anywhere via an authenticated relay pairing"
-authors = ["tehfonsi <7488280+tehfonsi@users.noreply.github.com>"]
+authors = ["41tunnels"]
 edition = "2021"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/OpenCharUI/amallo"
+repository = "https://github.com/41tunnels/amallo"
 default-run = "amallo"
 
 [lib]

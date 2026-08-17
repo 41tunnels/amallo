@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "description": "Securely use the AI models on your own computer from anywhere.",
   "license": "AGPL-3.0-or-later",
-  "repository": "https://github.com/OpenCharUI/amallo",
+  "repository": "https://github.com/41tunnels/amallo",
   "type": "module",
   "scripts": {
     "dev": "vite",
