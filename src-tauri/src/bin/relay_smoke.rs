@@ -1,6 +1,6 @@
 //! Throwaway manual verification for Step 5's real encrypted relay path:
 //! connects as the agent to a real relay (default: the deployed
-//! wss://amallo-relay.tehfonsi.com) using amallo_lib::relay::conn's real
+//! wss://relay.41tunnels.com) using amallo_lib::relay::conn's real
 //! crypto handshake, with no Tauri app involved at all — the point of
 //! the `run_once_with_status` split. Prints the pairing material so a
 //! peer (e.g. the relay repo's `fakeclient`, or `web`) can attach and
@@ -40,7 +40,7 @@ async fn main() {
 
     let relay_url = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "wss://amallo-relay.tehfonsi.com".to_string());
+        .unwrap_or_else(|| "wss://relay.41tunnels.com".to_string());
     // `off` means "start as amallo does with the endpoint disabled": no
     // key, so the hello omits `mode:"dual"` and the socket gets no HTTP
     // lane.

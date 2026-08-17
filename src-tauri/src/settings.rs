@@ -8,7 +8,7 @@ const KEY: &str = "settings";
 /// OpenCharUI's hosted relay — the default `relay_url` for a fresh
 /// install. Still overridable per-instance via Settings for anyone
 /// self-hosting a relay (see the relay repo's deployment docs).
-const DEFAULT_RELAY_URL: &str = "wss://amallo-relay.tehfonsi.com";
+const DEFAULT_RELAY_URL: &str = "wss://relay.41tunnels.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
