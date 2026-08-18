@@ -28,6 +28,20 @@
         </span>
       </header>
 
+      <!-- Above every card: an update the user has not taken yet outranks
+           the settings they came here to change. Hidden until the first
+           check finds something. -->
+      <div id="update-banner" class="t-update" hidden>
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 12.5V3.5" stroke-linecap="round"/><path d="M4.2 7.3 8 3.5l3.8 3.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="t-update__body">
+          <span id="update-text" class="t-update__text"></span>
+          <span id="update-hint" class="t-update__hint" hidden></span>
+        </span>
+        <button id="install-update" class="t-btn t-btn--secondary t-btn--sm" type="button">
+          Install and restart
+        </button>
+      </div>
+
       <section class="t-card t-card--dense">
         <div class="card__head">
           <h2 class="card__title">Pair a device</h2>
@@ -195,6 +209,19 @@
             <span class="t-switch__track" aria-hidden="true"><span class="t-switch__thumb"></span></span>
           </label>
         </div>
+
+        <div class="set">
+          <span>
+            <span class="set__name">Install updates automatically</span>
+            <span class="set__hint">never while a device is connected</span>
+          </span>
+          <label class="t-switch">
+            <input id="auto-update" type="checkbox" role="switch" aria-label="Install updates automatically" />
+            <span class="t-switch__track" aria-hidden="true"><span class="t-switch__thumb"></span></span>
+          </label>
+        </div>
+
+        <p class="version">Amallo <span id="app-version">—</span></p>
       </section>
     </main>
   </body>

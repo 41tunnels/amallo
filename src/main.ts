@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface Settings {
   proxy_port: number;
@@ -7,6 +8,7 @@ interface Settings {
   relay_url: string;
   auto_connect_relay: boolean;
   openai_endpoint_enabled: boolean;
+  auto_update: boolean;
 }
 
 interface OpenAiEndpoint {
@@ -14,6 +16,15 @@ interface OpenAiEndpoint {
   base_url: string;
   api_key: string;
 }
+
+// Mirrors `UpdateStatus` in state.rs. "deferred" means an update is ready
+// to install on its own but a device is attached right now.
+type UpdateStatus =
+  | { state: "idle" }
+  | { state: "available"; version: string }
+  | { state: "deferred"; version: string }
+  | { state: "downloading"; version: string }
+  | { state: "failed"; message: string };
 
 type RelayStatus =
   | { state: "disabled" }
@@ -40,6 +51,13 @@ const autoConnectRelay = $<HTMLInputElement>("auto-connect-relay");
 const relayStatusEl = $<HTMLElement>("relay-status");
 const relayStatusText = $<HTMLElement>("relay-status-text");
 const toggleRelayBtn = $<HTMLButtonElement>("toggle-relay");
+
+const updateBanner = $<HTMLDivElement>("update-banner");
+const updateText = $<HTMLElement>("update-text");
+const updateHint = $<HTMLElement>("update-hint");
+const installUpdateBtn = $<HTMLButtonElement>("install-update");
+const autoUpdate = $<HTMLInputElement>("auto-update");
+const appVersion = $<HTMLElement>("app-version");
 
 const openaiEnabled = $<HTMLInputElement>("openai-enabled");
 const openaiDetails = $<HTMLDivElement>("openai-details");
@@ -75,6 +93,41 @@ function renderRelayStatus(status: RelayStatus) {
     case "error":
       relayStatusText.textContent = `Relay error: ${status.message}`;
       toggleRelayBtn.textContent = "Connect Relay";
+      break;
+  }
+}
+
+function renderUpdateStatus(status: UpdateStatus) {
+  updateBanner.hidden = status.state === "idle";
+  updateBanner.dataset.state = status.state;
+  // Only "downloading" is uninterruptible; every other visible state has
+  // something for the button to do.
+  installUpdateBtn.disabled = status.state === "downloading";
+  updateHint.hidden = true;
+
+  switch (status.state) {
+    case "idle":
+      break;
+    case "available":
+      updateText.textContent = `Amallo ${status.version} is available`;
+      installUpdateBtn.textContent = "Install and restart";
+      break;
+    case "deferred":
+      updateText.textContent = `Amallo ${status.version} is available`;
+      updateHint.textContent =
+        "installs on its own once no device is connected";
+      updateHint.hidden = false;
+      installUpdateBtn.textContent = "Install now";
+      break;
+    case "downloading":
+      updateText.textContent = `Downloading ${status.version}…`;
+      installUpdateBtn.textContent = "Downloading…";
+      break;
+    case "failed":
+      updateText.textContent = "Update failed";
+      updateHint.textContent = status.message;
+      updateHint.hidden = false;
+      installUpdateBtn.textContent = "Try again";
       break;
   }
 }
@@ -134,7 +187,9 @@ async function init() {
   relayUrl.value = settings.relay_url;
   autoConnectRelay.checked = settings.auto_connect_relay;
   openaiEnabled.checked = settings.openai_endpoint_enabled;
-  for (const el of [bindLan, autoConnectRelay, openaiEnabled]) syncSwitch(el);
+  autoUpdate.checked = settings.auto_update;
+  for (const el of [bindLan, autoConnectRelay, openaiEnabled, autoUpdate])
+    syncSwitch(el);
 
   await refreshLanUrl();
   await refreshOpenAI();
@@ -142,10 +197,15 @@ async function init() {
   autostart.checked = await invoke<boolean>("get_autostart").catch(() => false);
   syncSwitch(autostart);
   renderRelayStatus(await invoke<RelayStatus>("get_relay_status"));
+  renderUpdateStatus(await invoke<UpdateStatus>("get_update_status"));
+  appVersion.textContent = await getVersion();
   await refreshPairing();
 
   await listen<RelayStatus>("relay-status", (event) =>
     renderRelayStatus(event.payload),
+  );
+  await listen<UpdateStatus>("update-status", (event) =>
+    renderUpdateStatus(event.payload),
   );
 }
 
@@ -185,6 +245,7 @@ async function persistSettings(changed: HTMLElement) {
     relay_url: relayUrl.value.trim(),
     auto_connect_relay: autoConnectRelay.checked,
     openai_endpoint_enabled: openaiEnabled.checked,
+    auto_update: autoUpdate.checked,
   };
   proxyPort.value = String(newSettings.proxy_port);
   relayUrl.value = newSettings.relay_url;
@@ -199,7 +260,14 @@ async function persistSettings(changed: HTMLElement) {
   if (changed === relayUrl || changed === openaiEnabled) await refreshOpenAI();
 }
 
-for (const el of [proxyPort, bindLan, relayUrl, autoConnectRelay, openaiEnabled]) {
+for (const el of [
+  proxyPort,
+  bindLan,
+  relayUrl,
+  autoConnectRelay,
+  openaiEnabled,
+  autoUpdate,
+]) {
   el.addEventListener("change", () => {
     syncSwitch(el);
     persistSettings(el);
@@ -225,6 +293,25 @@ $<HTMLButtonElement>("regen-openai-key").addEventListener("click", async () => {
     return;
   await invoke<string>("regenerate_openai_key");
   await refreshOpenAI();
+});
+
+installUpdateBtn.addEventListener("click", async () => {
+  // The automatic path refuses to install mid-session; this button is how
+  // a user overrides that, so it has to say what it will cost them first.
+  if (
+    currentRelayStatus.state === "online" &&
+    !confirm(
+      "A device is connected right now. Installing restarts Amallo and drops that connection. Install anyway?",
+    )
+  )
+    return;
+
+  // On success this never resolves — installing restarts the app. Only the
+  // failure path comes back, and update-status has already been emitted
+  // with the reason by then.
+  await invoke("install_update").catch((e) => {
+    console.error("install_update failed", e);
+  });
 });
 
 autostart.addEventListener("change", async () => {

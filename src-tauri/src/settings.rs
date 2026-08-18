@@ -36,6 +36,20 @@ pub struct Settings {
     /// a default.
     #[serde(default)]
     pub openai_endpoint_enabled: bool,
+
+    /// Install an available update on its own, once no device is attached.
+    ///
+    /// This does **not** gate the update *check* — that always runs, and an
+    /// available update is always surfaced in the tray and the settings
+    /// window. Turning this off only means the install waits for a click.
+    ///
+    /// Defaults to **true**, like `auto_connect_relay` and unlike
+    /// `openai_endpoint_enabled`: a signed update from the project's own
+    /// release manifest is maintenance, not a capability the user is
+    /// granting anyone. A stale amallo degrades the paired browser too —
+    /// web surfaces "This Amallo version does not support sync" against
+    /// one — so the safe default is staying current.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +60,7 @@ impl Default for Settings {
             relay_url: DEFAULT_RELAY_URL.to_string(),
             auto_connect_relay: true,
             openai_endpoint_enabled: false,
+            auto_update: true,
         }
     }
 }

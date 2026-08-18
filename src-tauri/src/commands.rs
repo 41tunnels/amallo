@@ -5,8 +5,8 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::settings::Settings;
-use crate::state::{AppState, RelayStatus};
-use crate::{pairing, proxy, relay, secrets, settings, tray};
+use crate::state::{AppState, RelayStatus, UpdateStatus};
+use crate::{pairing, proxy, relay, secrets, settings, tray, update};
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -42,7 +42,9 @@ pub fn save_settings(
             None
         };
         state.relay_api_key.send_replace(key);
-        tray::refresh_openai_endpoint(&app, new_settings.openai_endpoint_enabled);
+        // Reads the flag back out of AppState, which the write above has
+        // already updated.
+        tray::refresh_menu(&app);
     }
     tray::refresh_relay(&app, &state.relay_status());
     Ok(())
@@ -51,6 +53,22 @@ pub fn save_settings(
 #[tauri::command]
 pub fn get_bearer_token(state: State<'_, Arc<AppState>>) -> String {
     state.bearer_token()
+}
+
+#[tauri::command]
+pub fn get_update_status(state: State<'_, Arc<AppState>>) -> UpdateStatus {
+    state.update_status()
+}
+
+/// Installs the available update now, restarting the app into it.
+///
+/// Does not check whether a device is attached: the settings window
+/// confirms that with the user before calling this, and overriding is
+/// theirs to decide. The automatic path in `update::tick` is the one that
+/// enforces the live-session rule.
+#[tauri::command]
+pub async fn install_update(app: AppHandle<Wry>) -> Result<(), String> {
+    update::install_now(&app).await
 }
 
 #[tauri::command]

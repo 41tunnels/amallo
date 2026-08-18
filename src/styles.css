@@ -266,6 +266,25 @@ body {
 .t-notice svg { flex: none; margin-top: 2px; color: var(--status-hold); }
 .t-notice b { font-weight: var(--weight-semibold); color: var(--text-strong); }
 
+/* ---- Update banner ----
+   Built on --status-live, not the --status-hold that .t-notice uses: an
+   available update is good news to act on, not a caution. Sits outside the
+   cards so it reads as a bar across the page rather than one more setting.
+   Gets copper only for the button, which is the shared .t-btn. */
+.t-update { display: flex; align-items: center; gap: var(--space-3); padding: 10px var(--space-3); border-radius: var(--radius-1); border-left: 2px solid var(--status-live); background: color-mix(in srgb, var(--status-live) 11%, transparent); font-size: 12.5px; line-height: 1.5; color: var(--text-body); }
+.t-update svg { flex: none; color: var(--status-live); }
+.t-update__body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.t-update__text { font-weight: var(--weight-semibold); color: var(--text-strong); }
+.t-update__hint { font-family: var(--font-mono); font-size: var(--text-mono-sm); color: var(--text-muted); margin-top: 2px; }
+/* Downloading: the button goes quiet rather than disappearing, so the row
+   does not change height mid-download. */
+.t-update button[disabled] { opacity: 0.55; pointer-events: none; }
+/* Failure is the one state that borrows the caution color. */
+.t-update[data-state="failed"] { border-left-color: var(--status-hold); background: color-mix(in srgb, var(--status-hold) 11%, transparent); }
+.t-update[data-state="failed"] svg { color: var(--status-hold); }
+
+.version { font-family: var(--font-mono); font-size: var(--text-mono-sm); color: var(--text-muted); margin: 0; }
+
 /* ---- composition: setting row ---- */
 .set { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: var(--space-3); }
 .set__name { font-size: 13px; color: var(--text-body); }

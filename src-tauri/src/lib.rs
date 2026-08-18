@@ -10,6 +10,7 @@ pub mod state;
 pub mod store;
 mod sync;
 mod tray;
+mod update;
 
 use std::sync::Arc;
 
@@ -39,6 +40,7 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let bearer_token = secrets::get_or_create_bearer_token(app.handle())
                 .map_err(|e| format!("failed to load secrets: {e}"))?;
@@ -62,6 +64,9 @@ pub fn run() {
             // After the tray exists: the first probe result lands on the
             // menu rows built above.
             ollama::spawn_monitor(app.handle());
+            // Same ordering constraint: the update row is added to the
+            // menu built above once a check finds something.
+            update::spawn_monitor(app.handle());
 
             // Menu-bar-only app: no Dock icon on macOS.
             #[cfg(target_os = "macos")]
@@ -93,6 +98,8 @@ pub fn run() {
             commands::disconnect_relay,
             commands::get_openai_endpoint,
             commands::regenerate_openai_key,
+            commands::get_update_status,
+            commands::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
