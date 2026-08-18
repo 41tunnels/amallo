@@ -46,7 +46,7 @@ dependencies = [
 
 [[package]]
 name = "amallo"
-version = "1.0.1"
+version = "1.2.0"
 dependencies = [
  "aws-lc-rs",
  "axum",

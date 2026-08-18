@@ -39,6 +39,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "publisher": "41tunnels",
     "copyright": "Copyright © 41tunnels",
     "license": "AGPL-3.0-or-later",
