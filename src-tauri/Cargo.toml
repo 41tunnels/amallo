@@ -45,6 +45,10 @@ tauri-plugin-single-instance = "2.4"
 tauri-plugin-store = "2.4"
 tauri-plugin-clipboard-manager = "2.3"
 tauri-plugin-autostart = "2.5"
+# In-app updates from the GitHub releases manifest (see update.rs). Pulls
+# its own minreq-based HTTP client rather than reusing reqwest — that is
+# the plugin's design, not something this crate configures away.
+tauri-plugin-updater = "2.9"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 # net/io-util/sync/time declared explicitly rather than relying on

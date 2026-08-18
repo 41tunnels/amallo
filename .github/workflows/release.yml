@@ -57,6 +57,14 @@ jobs:
       contents: write
     strategy:
       fail-fast: false
+      # One leg at a time, deliberately. tauri-action builds latest.json
+      # by downloading the copy already on the release, merging its
+      # "platforms" map and re-uploading it — a read-modify-write. Run in
+      # parallel, the legs race on that asset and silently drop each
+      # other's platform entries, leaving a manifest that offers only some
+      # platforms an update. Releases are rare enough that serialising the
+      # builds is the cheap correct fix.
+      max-parallel: 1
       matrix:
         include:
           - platform: macos-latest # arm64
@@ -97,6 +105,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the updater artifacts and emits the latest.json manifest
+          # beside them. Without these the build still succeeds — it just
+          # quietly produces unsigned bundles and no manifest, and every
+          # installed copy stays stuck on the version it was installed at.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v${{ needs.release.outputs.version }}
           args: ${{ matrix.args }}

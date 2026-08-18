@@ -39,6 +39,34 @@ pub enum OllamaStatus {
     Down,
 }
 
+/// Where the in-app updater has got to — driven by `update::spawn_monitor`
+/// and mirrored into the tray and the settings window the same way
+/// `RelayStatus` is.
+///
+/// `Deferred` is the one state worth explaining: it means an update is
+/// available and `auto_update` is on, but a device is attached right now
+/// (`RelayStatus::Online`), so installing would tear down a live session —
+/// on Windows the NSIS installer force-exits the app to do its work. The
+/// monitor holds at `Deferred` and installs on a later tick, once the
+/// session ends. Nothing is downloaded while deferred; re-checking later
+/// is cheaper than parking an installer in memory indefinitely.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum UpdateStatus {
+    /// No newer release known — also the state before the first check.
+    Idle,
+    /// A newer release exists and is waiting for the user to ask for it
+    /// (`auto_update` is off).
+    Available { version: String },
+    /// Would install automatically, but a device is attached — see above.
+    Deferred { version: String },
+    Downloading { version: String },
+    /// A download or install actually failed. A failed *check* does not
+    /// land here: an offline laptop is the ordinary case, not something to
+    /// put a warning in the tray about.
+    Failed { message: String },
+}
+
 pub struct AppState {
     /// Bearer token the proxy expects. Kept in memory, persisted to `secrets.json`
     /// (0600) in the app data dir — see `secrets.rs`.
@@ -49,6 +77,8 @@ pub struct AppState {
     pub relay_status: RwLock<RelayStatus>,
     /// Live local-Ollama reachability — see `ollama::spawn_monitor`.
     pub ollama_status: RwLock<OllamaStatus>,
+    /// Live in-app update state — see `update::set_status`.
+    pub update_status: RwLock<UpdateStatus>,
     /// Handle of the running proxy server task (aborted on proxy restart).
     pub proxy_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// Handle of the running relay connection supervisor (aborted and
@@ -104,6 +134,7 @@ impl AppState {
             settings: RwLock::new(settings),
             relay_status: RwLock::new(RelayStatus::Disabled),
             ollama_status: RwLock::new(OllamaStatus::Unknown),
+            update_status: RwLock::new(UpdateStatus::Idle),
             proxy_task: Mutex::new(None),
             relay_task: Mutex::new(None),
             relay_api_key: watch::channel(None).0,
@@ -120,6 +151,10 @@ impl AppState {
 
     pub fn ollama_status(&self) -> OllamaStatus {
         *self.ollama_status.read().unwrap()
+    }
+
+    pub fn update_status(&self) -> UpdateStatus {
+        self.update_status.read().unwrap().clone()
     }
 
     pub fn bearer_token(&self) -> String {
