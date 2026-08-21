@@ -1,6 +1,6 @@
 [package]
 name = "amallo"
-version = "1.2.2"
+version = "1.3.0"
 description = "Securely reach your local Ollama instance from anywhere via an authenticated relay pairing"
 authors = ["41tunnels"]
 edition = "2021"
