@@ -28,13 +28,19 @@ pub struct Settings {
     /// §11), so any OpenAI-compatible app can point at this machine's
     /// Ollama with an API key.
     ///
-    /// Defaults to **false**, unlike `auto_connect_relay`: traffic on that
-    /// path is not end-to-end encrypted (an arbitrary third-party client
-    /// has no PSK, so the relay necessarily sees prompts and completions
-    /// in plaintext), and it makes this machine's GPU reachable by anyone
-    /// holding the key. That is a deliberate trade a user opts into, never
-    /// a default.
-    #[serde(default)]
+    /// Defaults to **true**: it is the endpoint most people install Amallo
+    /// for, and it is inert until someone holds the API key. The trade it
+    /// carries is real — traffic on this path is not end-to-end encrypted
+    /// (an arbitrary third-party client has no PSK, so the relay
+    /// necessarily sees prompts and completions in plaintext) and anyone
+    /// holding the key can use this machine's GPU — so the settings window
+    /// states that next to the switch, and the key can be rotated from
+    /// there at any time.
+    ///
+    /// No field-level `#[serde(default)]` here on purpose: that would fill
+    /// a missing key with `bool::default()` (false) instead of the
+    /// container default below, so an install predating this field would
+    /// silently disagree with a fresh one.
     pub openai_endpoint_enabled: bool,
 
     /// Install an available update on its own, once no device is attached.
@@ -43,12 +49,11 @@ pub struct Settings {
     /// available update is always surfaced in the tray and the settings
     /// window. Turning this off only means the install waits for a click.
     ///
-    /// Defaults to **true**, like `auto_connect_relay` and unlike
-    /// `openai_endpoint_enabled`: a signed update from the project's own
-    /// release manifest is maintenance, not a capability the user is
-    /// granting anyone. A stale amallo degrades the paired browser too —
-    /// web surfaces "This Amallo version does not support sync" against
-    /// one — so the safe default is staying current.
+    /// Defaults to **true**, like every other switch here: a signed update
+    /// from the project's own release manifest is maintenance, not a
+    /// capability the user is granting anyone. A stale amallo degrades the
+    /// paired browser too — web surfaces "This Amallo version does not
+    /// support sync" against one — so the safe default is staying current.
     pub auto_update: bool,
 }
 
@@ -59,7 +64,7 @@ impl Default for Settings {
             bind_lan: false,
             relay_url: DEFAULT_RELAY_URL.to_string(),
             auto_connect_relay: true,
-            openai_endpoint_enabled: false,
+            openai_endpoint_enabled: true,
             auto_update: true,
         }
     }

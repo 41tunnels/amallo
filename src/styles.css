@@ -258,6 +258,20 @@ body {
 .t-cred__value:focus { outline: none; }
 .t-cred .t-iconbtn { width: 32px; height: auto; border-radius: 0; border-left: var(--border-width) solid var(--border-hairline); }
 
+/* Two credentials sit side by side at the window's width; auto-fit means
+   a row holding only one of them (Local network, before the LAN address
+   exists) still fills the card instead of leaving a dead column. */
+.cred-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-3) var(--space-4); }
+
+/* Masked by default. -webkit-text-security rather than type="password":
+   the value stays a plain text input, so nothing here looks like a login
+   form to a password manager, and copy/select keep working. */
+.t-cred__value.is-masked { -webkit-text-security: disc; }
+.t-cred__reveal .eye-hide { display: none; }
+.t-cred__reveal[aria-pressed="true"] .eye-show { display: none; }
+.t-cred__reveal[aria-pressed="true"] .eye-hide { display: block; }
+.t-cred__reveal[aria-pressed="true"] { color: var(--text-strong); }
+
 /* ---- Notice ----
    Not in the shipped system either. Built on --status-warn/-dark rather
    than copper: copper is the brand accent (links, tags), so a
@@ -290,9 +304,14 @@ body {
 .set__name { font-size: 13px; color: var(--text-body); }
 .set__hint { font-family: var(--font-mono); font-size: var(--text-mono-sm); color: var(--text-muted); margin-top: 2px; }
 
-/* ---- pairing block ---- */
-.pair { display: flex; flex-direction: column; gap: var(--space-4); }
+/* ---- pairing block ----
+   The window is wide enough to sit the QR beside its explanation rather
+   than above it, which is also what keeps the code from ballooning to
+   card width. Below ~620px (the window is fixed, but a zoomed-in webview
+   reports less) it falls back to stacking. */
+.pair { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: var(--space-4); align-items: start; }
 .pair__col { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+@media (max-width: 620px) { .pair { grid-template-columns: minmax(0, 1fr); } }
 
 /* Always white-on-white regardless of theme: a QR scanner needs real
    contrast between the modules and the quiet zone, and inverting a QR

@@ -16,8 +16,8 @@
       {
         "label": "main",
         "title": "Amallo",
-        "width": 560,
-        "height": 640,
+        "width": 760,
+        "height": 780,
         "resizable": false,
         "visible": false,
         "center": true

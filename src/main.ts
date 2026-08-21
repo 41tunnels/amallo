@@ -156,6 +156,26 @@ function flashCopied(button: HTMLButtonElement) {
   }, 1200);
 }
 
+// Every credential in this window renders masked, and each one carries its
+// own reveal. The settings window is what a user screen-shares when asking
+// for help, and all four of these values (pairing URL and OpenAI base URL
+// included — they embed the PSK and the API key respectively) are live
+// credentials, not identifiers.
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-reveal]")) {
+  const input = $<HTMLInputElement>(button.dataset.reveal!);
+  button.addEventListener("click", () => {
+    const revealed = button.getAttribute("aria-pressed") === "true";
+    button.setAttribute("aria-pressed", String(!revealed));
+    input.classList.toggle("is-masked", revealed);
+    const label = button.getAttribute("aria-label")!;
+    button.setAttribute(
+      "aria-label",
+      revealed ? label.replace(/^Hide/, "Show") : label.replace(/^Show/, "Hide"),
+    );
+    button.title = revealed ? "Show" : "Hide";
+  });
+}
+
 // Switch tracks read their on/off visual from data-checked (the same
 // contract the design system's Switch component uses) rather than the
 // underlying, visually-hidden <input>, so it has to be kept in sync
