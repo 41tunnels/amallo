@@ -23,6 +23,12 @@
 //! `relay::supervise`. That is what makes enabling the endpoint in the
 //! app take effect without a manual disconnect.
 //!
+//! Pairing material is random per run, which is what you want for a
+//! one-shot check — but not for verifying anything about *reconnecting*,
+//! where the agent has to come back as the same pair the browser is still
+//! waiting on. Set `AMALLO_SMOKE_PAIR_ID` and `AMALLO_SMOKE_PSK`
+//! (base64url, no padding) to pin them across restarts.
+//!
 //! Not wired into any build/test target — run directly:
 //!   cargo run --bin relay_smoke [relay_url] [api_key|off] [rekey_to|off]
 
@@ -46,15 +52,44 @@ async fn main() {
     // lane.
     let api_key = std::env::args().nth(2).filter(|k| k != "off");
 
-    let mut pair_id = [0u8; 16];
-    let mut psk = [0u8; 32];
-    rand::rng().fill_bytes(&mut pair_id);
-    rand::rng().fill_bytes(&mut psk);
-
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let pair_id: [u8; 16] = match std::env::var("AMALLO_SMOKE_PAIR_ID") {
+        Ok(v) => b64
+            .decode(&v)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .expect("AMALLO_SMOKE_PAIR_ID must be 16 bytes, base64url without padding"),
+        Err(_) => {
+            let mut id = [0u8; 16];
+            rand::rng().fill_bytes(&mut id);
+            id
+        }
+    };
+    let psk: [u8; 32] = match std::env::var("AMALLO_SMOKE_PSK") {
+        Ok(v) => b64
+            .decode(&v)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .expect("AMALLO_SMOKE_PSK must be 32 bytes, base64url without padding"),
+        Err(_) => {
+            let mut k = [0u8; 32];
+            rand::rng().fill_bytes(&mut k);
+            k
+        }
+    };
+
     eprintln!("relay_smoke: relay={relay_url}");
     eprintln!("relay_smoke: pair_id={}", b64.encode(pair_id));
     eprintln!("relay_smoke: psk={}", b64.encode(psk));
+    // The exact string the web client's "paste pairing code" accepts
+    // (spec §4.2), so a browser can be attached without a QR scanner.
+    eprintln!(
+        "relay_smoke: pairing_code=opencharui://pair?v=1&r={}&i={}&k={}",
+        relay_url,
+        b64.encode(pair_id),
+        b64.encode(psk)
+    );
 
     // `/api/tags` is on the E2E allowlist only and `/v1/models` on the
     // HTTP one, so which route answers proves which lane carried the
