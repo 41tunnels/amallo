@@ -23,6 +23,7 @@
 //! interrupting third-party inference mid-stream.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aws_lc_rs::digest;
 use axum::Router;
@@ -67,6 +68,38 @@ const HANDSHAKE_CHANNEL_CAPACITY: usize = 4;
 /// flood rather than a race.
 const MAX_PENDING_CIPHERTEXT: usize = 16;
 
+/// How many of the relay's ping intervals of complete silence mean the
+/// path is dead rather than merely idle.
+///
+/// The relay pings every `ping_ms` (spec §7) and tokio-tungstenite answers
+/// those for us, so a healthy parked connection is never quiet for two
+/// intervals, let alone three. A connection whose path died — laptop
+/// slept, Wi-Fi flipped, CGNAT dropped the mapping — is quiet forever,
+/// because a half-open TCP socket reports nothing until something is
+/// written to it. Without this check that connection sat in
+/// `read.next()` indefinitely: amallo believed it was online, the relay
+/// had long since dropped it, and the pairing was simply gone until the
+/// user restarted the app. This is what makes it come back on its own.
+const IDLE_TIMEOUT_PINGS: u32 = 3;
+
+/// Fallback cadence when `hello_ok` carries no `ping_ms` (an older relay).
+const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Floor on the derived silence timeout, so a relay advertising a very
+/// short ping cadence cannot make this side trigger-happy.
+const MIN_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// How many session failures one connection tolerates before it stops
+/// re-handshaking in place and hands back to the supervisor.
+///
+/// A failed session is recoverable: the keys are retired, a fresh
+/// handshake replaces them, and the connection — including the plain lane
+/// serving the OpenAI endpoint — carries on. A *persistent* failure is
+/// not, and retrying forever would be an invisible handshake loop. Small
+/// on purpose: the legitimate cause (a peer that redialled mid-session)
+/// clears in one attempt.
+const MAX_SESSION_FAILURES: u32 = 5;
+
 /// The outer-frame header every ciphertext frame in this codebase is sent
 /// under: channel 0x01, no flags (v1 has no `conn_id`). Constant because
 /// it never varies — see spec §5's AAD definition.
@@ -77,6 +110,10 @@ struct ControlMsg {
     t: String,
     #[serde(default)]
     code: String,
+    /// The relay's own ping cadence, advertised in `hello_ok`. This side
+    /// sizes its silence timeout from it — see [`IDLE_TIMEOUT_PINGS`].
+    #[serde(default)]
+    ping_ms: u64,
 }
 
 /// Why a connection ended, as far as the supervisor is concerned.
@@ -243,7 +280,8 @@ pub async fn run_once_with_status(
     let api_key = api_key_rx.borrow_and_update().clone();
 
     send_hello(&mut write, pair_id, api_key.as_deref()).await?;
-    expect_control(&mut read, "hello_ok").await?;
+    let ping_interval = expect_control(&mut read, "hello_ok").await?;
+    let idle_timeout = (ping_interval * IDLE_TIMEOUT_PINGS).max(MIN_IDLE_TIMEOUT);
 
     // Past hello the connection is live and stays live. `Waiting` here
     // means "connected, no browser paired yet" — which is also when the
@@ -279,7 +317,7 @@ pub async fn run_once_with_status(
         http: &http_dispatcher,
         on_status: &on_status,
     };
-    let result = run_reader_dual(&mut read, ctx, &mut api_key_rx, api_key).await;
+    let result = run_reader_dual(&mut read, ctx, &mut api_key_rx, api_key, idle_timeout).await;
 
     // `http_tx` stayed alive for the reader's whole life so the writer's
     // plain arm never observed a closed channel while the connection was
@@ -501,6 +539,7 @@ async fn run_reader_dual<S, F>(
     ctx: ConnCtx<'_, F>,
     api_key_rx: &mut watch::Receiver<Option<String>>,
     initial_key: Option<String>,
+    idle_timeout: Duration,
 ) -> Result<ConnEnd, String>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
@@ -527,6 +566,19 @@ where
     // connection is up.
     let (hs_done_tx, mut hs_done_rx) =
         mpsc::channel::<Result<HandshakeResult, String>>(HANDSHAKE_CHANNEL_CAPACITY);
+
+    // Liveness: anything arriving from the relay, ping frames included,
+    // proves the path is still there. Checked on a timer rather than by
+    // wrapping the read in a timeout, so the other select arms firing
+    // (a rekey, a finished handshake) cannot keep resetting the clock.
+    let mut last_rx = Instant::now();
+    let mut liveness = tokio::time::interval(idle_timeout / 3);
+    liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    liveness.tick().await; // the first tick is immediate; spend it here
+
+    // Session failures are recoverable in place, up to a point — see
+    // MAX_SESSION_FAILURES. Reset by every session that establishes.
+    let mut session_failures: u32 = 0;
 
     loop {
         let data = tokio::select! {
@@ -632,6 +684,7 @@ where
                         }
 
                         session = Session::Established { opener, dispatcher };
+                        session_failures = 0;
                         (ctx.on_status)(RelayStatus::Online);
                         println!("amallo: relay: session established");
                     }
@@ -651,6 +704,7 @@ where
 
             incoming = read.next() => {
                 let Some(msg) = incoming else { return Ok(ConnEnd::Closed) };
+                last_rx = Instant::now();
                 match msg.map_err(|e| format!("read: {e}"))? {
                     Message::Binary(data) => data,
                     Message::Close(_) => return Ok(ConnEnd::Closed),
@@ -662,9 +716,33 @@ where
                     }
                 }
             }
+
+            // Nothing from the relay for several ping intervals. The
+            // socket may still look open — a half-open TCP connection
+            // does — so this is the only thing that will ever notice.
+            _ = liveness.tick() => {
+                let quiet = last_rx.elapsed();
+                if quiet > idle_timeout {
+                    println!(
+                        "amallo: relay: silent for {quiet:?} (limit {idle_timeout:?});                          treating the connection as dead and redialling"
+                    );
+                    return Ok(ConnEnd::Closed);
+                }
+                continue;
+            }
         };
 
-        let (hdr, payload) = wire::parse_outer(&data).map_err(|e| e.to_string())?;
+        // Dropped, not fatal. WebSocket messages are self-delimiting, so
+        // one unparseable frame desynchronises nothing — and killing a
+        // healthy socket (plain lane included) over a single bad frame
+        // costs far more than ignoring it.
+        let (hdr, payload) = match wire::parse_outer(&data) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                eprintln!("amallo: relay: dropping an unparseable frame: {e}");
+                continue;
+            }
+        };
 
         if hdr.channel == wire::CHANNEL_CONTROL {
             match control_type(payload).as_deref() {
@@ -711,27 +789,61 @@ where
             // moments away, so hold the frame rather than lose it.
             if let Session::Handshaking { pending, .. } = &mut session {
                 if pending.len() >= MAX_PENDING_CIPHERTEXT {
-                    return Err(
-                        "too many ciphertext frames arrived before the session was established"
-                            .to_string(),
+                    // Past this it is a flood, not a race. Dropping fails
+                    // the one stream the frame belonged to, which the peer
+                    // can retry; dropping the connection would fail every
+                    // other stream on it, and the plain lane too.
+                    eprintln!(
+                        "amallo: relay: dropping ciphertext held during a handshake: over {MAX_PENDING_CIPHERTEXT} frames buffered"
                     );
+                    continue;
                 }
                 pending.push(payload.to_vec());
                 continue;
             }
-            let Session::Established { opener, dispatcher } = &mut session else {
+
+            // A session-level failure is scoped to the session. The keys
+            // are what went wrong — the socket underneath is fine, and it
+            // is also carrying the OpenAI endpoint's plain lane and, on
+            // the relay side, this agent's whole registration. Tearing it
+            // down over one unopenable frame took every one of those with
+            // it and cost a full reconnect on both ends; retiring the
+            // session and offering a fresh handshake costs one round trip
+            // and the peer picks it up automatically (spec §4.6).
+            let failure = match &mut session {
+                Session::Established { opener, dispatcher } => {
+                    match opener.open(&CIPHERTEXT_HEADER, payload) {
+                        Ok(plaintext) => match wire::decode_inner_all(&plaintext) {
+                            Ok(frames) => {
+                                for frame in frames {
+                                    dispatcher.handle(frame).await;
+                                }
+                                None
+                            }
+                            Err(e) => Some(format!("decode inner frames: {e}")),
+                        },
+                        Err(e) => Some(format!("aead open: {}", crypto::error_code(e))),
+                    }
+                }
                 // Idle: no session, and none coming. There is no key to
-                // authenticate this with, so it ends the connection rather
-                // than being skipped — the one case where tolerating a
-                // frame would mean acting on unauthenticated data.
-                return Err("ciphertext frame arrived with no established session".to_string());
+                // authenticate this with, so nothing is acted on — but a
+                // peer sending ciphertext believes a session exists, so
+                // the useful answer is a new handshake, not a hang-up.
+                _ => Some("ciphertext frame arrived with no established session".to_string()),
             };
-            let plaintext = opener
-                .open(&CIPHERTEXT_HEADER, payload)
-                .map_err(|e| format!("aead open: {}", crypto::error_code(e)))?;
-            let frames = wire::decode_inner_all(&plaintext).map_err(|e| e.to_string())?;
-            for frame in frames {
-                dispatcher.handle(frame).await;
+
+            if let Some(reason) = failure {
+                session_failures += 1;
+                eprintln!(
+                    "amallo: relay: session failed ({reason}); retiring it and re-handshaking                      (attempt {session_failures} of {MAX_SESSION_FAILURES})"
+                );
+                let _ = ctx.cmd_tx.send(WriterCmd::SessionDown).await;
+                (ctx.on_status)(RelayStatus::Waiting);
+                if session_failures >= MAX_SESSION_FAILURES {
+                    eprintln!("amallo: relay: too many session failures on one connection; redialling");
+                    return Ok(ConnEnd::Closed);
+                }
+                session = start_handshake(&ctx, &hs_done_tx);
             }
             continue;
         }
@@ -746,14 +858,26 @@ where
                 eprintln!("amallo: relay: plain frame received with the OpenAI endpoint disabled");
                 continue;
             }
-            let frames = wire::decode_inner_all(payload).map_err(|e| e.to_string())?;
+            let frames = match wire::decode_inner_all(payload) {
+                Ok(frames) => frames,
+                Err(e) => {
+                    // Same reasoning as the ciphertext lane: one bad frame
+                    // fails one request, not the pairing next to it.
+                    eprintln!("amallo: relay: dropping a malformed plain frame: {e}");
+                    continue;
+                }
+            };
             for frame in frames {
                 ctx.http.handle(frame).await;
             }
             continue;
         }
 
-        return Err(format!("unexpected channel 0x{:02x}", hdr.channel.0));
+        // A channel this build does not know is most likely a newer relay
+        // or a newer peer, which is exactly the case the mode handling in
+        // the hello is already lenient about. Ignore it and keep serving
+        // the lanes that do exist.
+        eprintln!("amallo: relay: ignoring a frame on unknown channel 0x{:02x}", hdr.channel.0);
     }
 }
 
@@ -777,7 +901,7 @@ pub async fn run_once_insecure(
     let (mut write, mut read) = ws_stream.split();
 
     send_hello(&mut write, pair_id, None).await?;
-    expect_control(&mut read, "hello_ok").await?;
+    let _ = expect_control(&mut read, "hello_ok").await?;
 
     let (out_tx, out_rx) = mpsc::channel::<InnerFrame>(OUT_CHANNEL_CAPACITY);
     let dispatcher = Dispatcher::new(router, bearer_token, out_tx);
@@ -826,7 +950,11 @@ where
 /// matches `want_type` — used only for the immediate post-hello
 /// `hello_ok` check; the main read loop handles every subsequent control
 /// message (`peer_online`/`peer_offline`/`error`/`going_away`) itself.
-async fn expect_control<S>(read: &mut S, want_type: &str) -> Result<(), String>
+///
+/// Returns the relay's advertised ping interval, which `hello_ok` carries
+/// as `ping_ms`. An older relay that omits it, or advertises nonsense,
+/// yields [`DEFAULT_PING_INTERVAL`].
+async fn expect_control<S>(read: &mut S, want_type: &str) -> Result<Duration, String>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
@@ -855,7 +983,11 @@ where
         if msg.t != want_type {
             return Err(format!("expected control {want_type:?}, got {:?}", msg.t));
         }
-        return Ok(());
+        let ping = match msg.ping_ms {
+            0 => DEFAULT_PING_INTERVAL,
+            ms => Duration::from_millis(ms),
+        };
+        return Ok(ping);
     }
 }
 

@@ -43,12 +43,21 @@ use crate::{pairing, secrets, tray};
 
 const BACKOFF_BASE: Duration = Duration::from_millis(500);
 const BACKOFF_MULTIPLIER: f64 = 1.8;
-const BACKOFF_CAP: Duration = Duration::from_secs(30);
+/// Ceiling on the reconnect delay. Deliberately well under a minute: the
+/// thing waiting on the far side of this is a person watching a chat that
+/// says the machine is offline, and the relay is a single cheap socket to
+/// re-establish, not something a client should be shy about retrying.
+const BACKOFF_CAP: Duration = Duration::from_secs(15);
 /// A connection that stayed up at least this long resets the backoff
 /// exponent — a session that ran fine for a while and then dropped is not
 /// evidence the relay (or network) is in trouble, so the next reconnect
 /// attempt shouldn't inherit a long delay from some earlier flapping.
-const BACKOFF_RESET_AFTER: Duration = Duration::from_secs(60);
+///
+/// Comfortably shorter than the silence timeout that ends a dead
+/// connection (`conn::IDLE_TIMEOUT_PINGS`), so waking from sleep or
+/// changing network always counts as "was up, then dropped" and redials
+/// immediately rather than inheriting an old backoff.
+const BACKOFF_RESET_AFTER: Duration = Duration::from_secs(30);
 
 /// Updates relay status everywhere at once: state, tray menu, settings
 /// window.
