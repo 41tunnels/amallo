@@ -42,9 +42,6 @@ pub fn save_settings(
             None
         };
         state.relay_api_key.send_replace(key);
-        // Reads the flag back out of AppState, which the write above has
-        // already updated.
-        tray::refresh_menu(&app);
     }
     tray::refresh_relay(&app, &state.relay_status());
     Ok(())

@@ -10,8 +10,8 @@ use tauri::{AppHandle, Wry};
 
 use crate::secrets;
 
-/// Encodes the pairing URI a QR code or the "copy pairing code" tray
-/// action both carry: `opencharui://pair?v=1&r=<relay_url>&i=<pair_id>&k=<psk>`.
+/// Encodes the pairing URI the QR code and the copyable "Pairing URL"
+/// field both carry: `opencharui://pair?v=1&r=<relay_url>&i=<pair_id>&k=<psk>`.
 /// `relay_url` is not percent-encoded — it never contains `&`/`=`/`#`
 /// characters in practice (a plain `wss://host[:port]`), and every other
 /// implementation of this spec (the relay repo's `fakeagent`, this

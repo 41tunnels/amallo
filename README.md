@@ -179,6 +179,11 @@ Amallo is one of three products under the [41tunnels](https://41tunnels.com) umb
 - **Relay** — the self-hosted server that splices connections without ever reading them.
 - **OpenCharUI** — a browser roleplay chat app that pairs with Amallo to reach your own models.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — pull requests require agreeing to
+the [Individual](CLA.md) or [Entity](CLA-entity.md) CLA.
+
 ## License
 
 Copyright © 41tunnels. Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).

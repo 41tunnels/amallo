@@ -3,11 +3,9 @@ use std::sync::Arc;
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};
-use tauri_plugin_clipboard_manager::ClipboardExt;
 
-use crate::commands::openai_base_url;
 use crate::state::{AppState, OllamaStatus, RelayStatus, UpdateStatus};
-use crate::{pairing, relay, secrets, update};
+use crate::{relay, update};
 
 pub struct TrayItems {
     /// Sits above everything, and only while there is actually an update
@@ -17,26 +15,12 @@ pub struct TrayItems {
     pub ollama_status: MenuItem<Wry>,
     pub relay_status: MenuItem<Wry>,
     pub relay_toggle: MenuItem<Wry>,
-    pub show_pairing_qr: MenuItem<Wry>,
-    pub copy_pairing_code: MenuItem<Wry>,
-    // Only ever appears in the built menu while the OpenAI-compatible
-    // endpoint is enabled (see build_menu) — there is nothing valid to
-    // copy while it's off. The item itself is still created once at
-    // startup and kept around unconditionally: recreating a `MenuItem`
-    // with an id already in use is the thing to avoid, not the item's
-    // mere existence off-menu.
-    pub copy_endpoint_url: MenuItem<Wry>,
     pub settings: MenuItem<Wry>,
     pub quit: MenuItem<Wry>,
 }
 
 impl TrayItems {
-    fn build_menu(
-        &self,
-        app: &AppHandle<Wry>,
-        openai_endpoint_enabled: bool,
-        show_update: bool,
-    ) -> tauri::Result<Menu<Wry>> {
+    fn build_menu(&self, app: &AppHandle<Wry>, show_update: bool) -> tauri::Result<Menu<Wry>> {
         let sep_after_update = PredefinedMenuItem::separator(app)?;
         let sep_after_relay = PredefinedMenuItem::separator(app)?;
         let sep_after_settings = PredefinedMenuItem::separator(app)?;
@@ -52,12 +36,7 @@ impl TrayItems {
             &sep_after_relay,
             &self.relay_status,
             &self.relay_toggle,
-            &self.show_pairing_qr,
-            &self.copy_pairing_code,
         ]);
-        if openai_endpoint_enabled {
-            items.push(&self.copy_endpoint_url);
-        }
         items.push(&sep_after_settings);
         items.push(&self.settings);
         items.push(&sep_before_quit);
@@ -69,7 +48,7 @@ impl TrayItems {
 
 pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
     // Created unconditionally but kept out of the menu until there is an
-    // update to offer — same reasoning as copy_endpoint_url below. Starts
+    // update to offer — a version the user cannot act on is noise. Starts
     // enabled; `refresh_update` disables it while a download is running.
     let update_item = MenuItem::with_id(app, "update", "Update available…", true, None::<&str>)?;
     // Sits above the relay rows: without a running Ollama there is nothing
@@ -83,33 +62,22 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
     )?;
     let relay_status = MenuItem::with_id(app, "relay_status", "Relay: disabled", false, None::<&str>)?;
     let relay_toggle = MenuItem::with_id(app, "relay_toggle", "Connect Relay", true, None::<&str>)?;
-    // Opens the settings window — that's where the QR itself renders
-    // (a native tray menu item can't show an image); this just gets you
-    // there in one click instead of hunting for "Settings…".
-    let show_pairing_qr = MenuItem::with_id(app, "show_pairing_qr", "Show Pairing QR…", true, None::<&str>)?;
-    let copy_pairing_code = MenuItem::with_id(app, "copy_pairing_code", "Copy Pairing Code", true, None::<&str>)?;
-    let copy_endpoint_url =
-        MenuItem::with_id(app, "copy_endpoint_url", "Copy Endpoint URL", true, None::<&str>)?;
 
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Amallo", true, None::<&str>)?;
 
     let state = app.state::<Arc<AppState>>().inner().clone();
-    let openai_endpoint_enabled = state.settings().openai_endpoint_enabled;
 
     let items = TrayItems {
         update: update_item,
         ollama_status,
         relay_status,
         relay_toggle,
-        show_pairing_qr,
-        copy_pairing_code,
-        copy_endpoint_url,
         settings,
         quit,
     };
     // No update is known this early — the first check is 30s out.
-    let menu = items.build_menu(app, openai_endpoint_enabled, false)?;
+    let menu = items.build_menu(app, false)?;
     let _ = state.tray_items.set(items);
 
     // Both platforms get their own tightly-cropped tray glyph rather than
@@ -143,21 +111,19 @@ pub fn build(app: &AppHandle<Wry>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Rebuilds the tray menu so the conditional rows — "Copy Endpoint URL"
-/// while the OpenAI-compatible endpoint is on, and the update row while an
-/// update exists — appear only when they apply. muda has no per-item
-/// show/hide, so the menu itself is replaced rather than items being left
-/// in place disabled. Both inputs are read from `AppState`, so callers
-/// only have to make sure they have already committed their change there.
-/// Cheap and infrequent enough that a full rebuild is the simpler correct
-/// choice.
+/// Rebuilds the tray menu so the conditional update row appears only while
+/// an update exists. muda has no per-item show/hide, so the menu itself is
+/// replaced rather than the item being left in place disabled. The status
+/// is read from `AppState`, so callers only have to make sure they have
+/// already committed their change there. Cheap and infrequent enough that a
+/// full rebuild is the simpler correct choice.
 pub fn refresh_menu(app: &AppHandle<Wry>) {
     let state = app.state::<Arc<AppState>>();
     let Some(items) = state.tray_items.get() else {
         return;
     };
     let show_update = update_text(&state.update_status()).is_some();
-    let Ok(menu) = items.build_menu(app, state.settings().openai_endpoint_enabled, show_update) else {
+    let Ok(menu) = items.build_menu(app, show_update) else {
         return;
     };
     if let Some(tray) = app.tray_by_id("main") {
@@ -197,22 +163,6 @@ fn on_menu_event(app: &AppHandle<Wry>, id: &str) {
                 _ => {
                     let _ = relay::connect(&app);
                 }
-            }
-        }
-        "show_pairing_qr" => show_settings_window(app),
-        "copy_pairing_code" => {
-            if let Ok((pair_id, psk)) = pairing::get_or_create(app) {
-                let uri = pairing::encode_uri(&state.settings().relay_url, pair_id, psk);
-                let _ = app.clipboard().write_text(uri);
-            }
-        }
-        // Only reachable while the menu was built with the endpoint on
-        // (build_menu), so the key this reads is always the one the live
-        // relay connection currently accepts.
-        "copy_endpoint_url" => {
-            if let Ok(api_key) = secrets::get_or_create_openai_key(app) {
-                let url = openai_base_url(&state.settings().relay_url, &api_key);
-                let _ = app.clipboard().write_text(url);
             }
         }
         "settings" => show_settings_window(app),

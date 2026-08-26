@@ -57,15 +57,6 @@
           Use this machine's Ollama from Open WebUI, Cursor, Continue, LibreChat, or an SDK.
         </p>
 
-        <div class="t-notice">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 1.8 15 14H1z" stroke-linejoin="round"/><path d="M8 6.4v3.2"/><path d="M8 11.6v.1"/></svg>
-          <span>
-            <b>Not end-to-end encrypted.</b> The relay can read prompts and replies, and
-            anyone holding the key can use this machine's GPU. Only model listing and
-            inference are reachable — never model downloads or deletion.
-          </span>
-        </div>
-
         <div id="openai-details" class="cred-grid">
           <div class="t-field">
             <span class="t-field__label">Base URL</span>
@@ -111,8 +102,8 @@
           <div class="qr"><div id="pairing-qr" class="qr__img"></div></div>
           <div class="pair__col">
             <p class="card__note">
-              Scan from OpenCharUI on your phone. Traffic stays end-to-end encrypted —
-              the relay only forwards it.
+              Scan from a compatible WebSocket client on your phone. Traffic stays
+              end-to-end encrypted — the relay only forwards it.
             </p>
 
             <!-- Collapsed by default: scanning is the path, and this URL
