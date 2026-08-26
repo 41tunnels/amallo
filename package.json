@@ -1,7 +1,7 @@
 {
   "name": "amallo",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Securely use the AI models on your own computer from anywhere.",
   "license": "AGPL-3.0-or-later",
   "repository": "https://github.com/41tunnels/amallo",
