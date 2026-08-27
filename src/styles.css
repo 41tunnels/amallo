@@ -263,6 +263,11 @@ body {
    exists) still fills the card instead of leaving a dead column. */
 .cred-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-3) var(--space-4); }
 
+/* The fallback URL disclosure is a footnote to both fields above it, not
+   a third column: without this it lands in the auto-fit flow and sits
+   beside them on a wide window. */
+.cred-grid__full { grid-column: 1 / -1; }
+
 /* Masked by default. -webkit-text-security rather than type="password":
    the value stays a plain text input, so nothing here looks like a login
    form to a password manager, and copy/select keep working. */

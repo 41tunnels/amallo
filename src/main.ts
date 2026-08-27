@@ -15,6 +15,7 @@ interface OpenAiEndpoint {
   enabled: boolean;
   base_url: string;
   api_key: string;
+  path_base_url: string;
 }
 
 // Mirrors `UpdateStatus` in state.rs. "deferred" means an update is ready
@@ -62,6 +63,7 @@ const appVersion = $<HTMLElement>("app-version");
 const openaiEnabled = $<HTMLInputElement>("openai-enabled");
 const openaiDetails = $<HTMLDivElement>("openai-details");
 const openaiBaseUrl = $<HTMLInputElement>("openai-base-url");
+const openaiPathBaseUrl = $<HTMLInputElement>("openai-path-base-url");
 const openaiKey = $<HTMLInputElement>("openai-key");
 
 let currentRelayStatus: RelayStatus = { state: "disabled" };
@@ -158,9 +160,10 @@ function flashCopied(button: HTMLButtonElement) {
 
 // Every credential in this window renders masked, and each one carries its
 // own reveal. The settings window is what a user screen-shares when asking
-// for help, and all four of these values (pairing URL and OpenAI base URL
-// included — they embed the PSK and the API key respectively) are live
-// credentials, not identifiers.
+// for help, and all four of these values (the pairing URL and the fallback
+// OpenAI path URL included — they embed the PSK and the API key
+// respectively) are live credentials, not identifiers. The plain OpenAI
+// base URL is deliberately not among them: it carries no secret.
 for (const button of document.querySelectorAll<HTMLButtonElement>("[data-reveal]")) {
   const input = $<HTMLInputElement>(button.dataset.reveal!);
   button.addEventListener("click", () => {
@@ -184,11 +187,13 @@ function syncSwitch(input: HTMLInputElement) {
   input.closest(".t-switch")?.setAttribute("data-checked", String(input.checked));
 }
 
-// The base URL embeds the API key (some clients accept only a base URL),
-// so it has to be re-read after a key rotation as well as on load.
+// The base URL is keyless and survives a rotation untouched; the
+// fallback path URL embeds the key and does not, so both are re-read
+// after a rotation as well as on load.
 async function refreshOpenAI() {
   const endpoint = await invoke<OpenAiEndpoint>("get_openai_endpoint");
   openaiBaseUrl.value = endpoint.base_url;
+  openaiPathBaseUrl.value = endpoint.path_base_url;
   openaiKey.value = endpoint.api_key;
   openaiDetails.hidden = !openaiEnabled.checked;
 }
@@ -298,6 +303,14 @@ $<HTMLButtonElement>("copy-openai-url").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: openaiBaseUrl.value });
   flashCopied(e.currentTarget as HTMLButtonElement);
 });
+
+$<HTMLButtonElement>("copy-openai-path-url").addEventListener(
+  "click",
+  async (e) => {
+    await invoke("copy_to_clipboard", { text: openaiPathBaseUrl.value });
+    flashCopied(e.currentTarget as HTMLButtonElement);
+  },
+);
 
 $<HTMLButtonElement>("copy-openai-key").addEventListener("click", async (e) => {
   await invoke("copy_to_clipboard", { text: openaiKey.value });

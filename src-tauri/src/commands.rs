@@ -88,13 +88,18 @@ pub fn regenerate_bearer_token(
 }
 
 /// What the settings UI needs to show for the OpenAI-compatible endpoint
-/// (spec §11): whether it is on, and the exact two strings a user pastes
-/// into another app.
+/// (spec §11): whether it is on, the two strings a user pastes into
+/// another app, and the fallback URL for the clients that cannot take a
+/// key separately.
 #[derive(serde::Serialize)]
 pub struct OpenAiEndpoint {
     pub enabled: bool,
     pub base_url: String,
     pub api_key: String,
+    /// The §11.6 path form, for a client with a URL field and no key
+    /// field. Secret — it embeds the key — so the UI keeps it masked and
+    /// behind a disclosure rather than offering it first.
+    pub path_base_url: String,
 }
 
 #[tauri::command]
@@ -106,7 +111,8 @@ pub fn get_openai_endpoint(
     let api_key = secrets::get_or_create_openai_key(&app)?;
     Ok(OpenAiEndpoint {
         enabled: s.openai_endpoint_enabled,
-        base_url: openai_base_url(&s.relay_url, &api_key),
+        base_url: openai_base_url(&s.relay_url),
+        path_base_url: openai_path_base_url(&s.relay_url, &api_key),
         api_key,
     })
 }
@@ -134,40 +140,80 @@ pub fn regenerate_openai_key(
 
 /// Builds the base URL a third-party client is configured with. The relay
 /// URL is a WebSocket URL; the HTTP endpoint is the same host over plain
-/// HTTP(S), with the key as the first path segment.
+/// HTTP(S).
 ///
-/// The key is embedded here because that form works with every client,
-/// including the ones that only accept a base URL. Clients that can send
-/// an `Authorization` header may use the key there instead and drop the
-/// path segment — the relay accepts both.
-pub(crate) fn openai_base_url(relay_url: &str, api_key: &str) -> String {
+/// No key here: a client configured with a base URL and an API key sends
+/// the key as `Authorization: Bearer` anyway, so putting it in the path
+/// as well is a second copy that buys nothing and costs a credential in
+/// access logs, `Referer` headers and browser history (spec §11.6). This
+/// form leaves the base URL a plain hostname the user can paste, screen-
+/// share and keep across a key rotation.
+pub(crate) fn openai_base_url(relay_url: &str) -> String {
+    format!("{}/v1", http_origin(relay_url))
+}
+
+/// The §11.6 path form, for the clients that expose a base-URL field and
+/// no key field at all. It is a credential, and the only reason to hand
+/// it out is that such a client has nowhere else to put the key.
+///
+/// Precedence matters when both are in play: the relay reads the path
+/// segment *before* the `Authorization` header, so a stale key left in a
+/// base URL silently wins over a freshly rotated one in the key field.
+/// That is the trap [`openai_base_url`] avoids by default.
+pub(crate) fn openai_path_base_url(relay_url: &str, api_key: &str) -> String {
+    format!("{}/{api_key}/v1", http_origin(relay_url))
+}
+
+/// `wss://host` -> `https://host`, `ws://host` -> `http://host`, trailing
+/// slash trimmed. Anything else is passed through: a user who typed an
+/// http(s) relay URL by hand gets what they typed.
+fn http_origin(relay_url: &str) -> String {
     let base = relay_url.trim_end_matches('/');
-    let http = match base.strip_prefix("wss://") {
+    match base.strip_prefix("wss://") {
         Some(rest) => format!("https://{rest}"),
         None => match base.strip_prefix("ws://") {
             Some(rest) => format!("http://{rest}"),
             None => base.to_string(),
         },
-    };
-    format!("{http}/{api_key}/v1")
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::openai_base_url;
+    use super::{openai_base_url, openai_path_base_url};
 
     #[test]
     fn builds_https_base_url_from_wss_relay() {
         assert_eq!(
-            openai_base_url("wss://relay.opencharui.com", "41t_abc"),
-            "https://relay.opencharui.com/41t_abc/v1"
+            openai_base_url("wss://relay.41tunnels.com"),
+            "https://relay.41tunnels.com/v1"
         );
     }
 
     #[test]
     fn builds_http_base_url_from_ws_relay_and_trims_slash() {
         assert_eq!(
-            openai_base_url("ws://127.0.0.1:8080/", "41t_abc"),
+            openai_base_url("ws://127.0.0.1:8080/"),
+            "http://127.0.0.1:8080/v1"
+        );
+    }
+
+    /// The default form must not carry the key: that is the whole point
+    /// of the split, and a regression here would put a credential back
+    /// into every user's access logs without anything else failing.
+    #[test]
+    fn base_url_never_embeds_the_key() {
+        assert!(!openai_base_url("wss://relay.41tunnels.com").contains("41t_"));
+    }
+
+    #[test]
+    fn builds_path_form_for_url_only_clients() {
+        assert_eq!(
+            openai_path_base_url("wss://relay.41tunnels.com", "41t_abc"),
+            "https://relay.41tunnels.com/41t_abc/v1"
+        );
+        assert_eq!(
+            openai_path_base_url("ws://127.0.0.1:8080/", "41t_abc"),
             "http://127.0.0.1:8080/41t_abc/v1"
         );
     }
