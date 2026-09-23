@@ -5,6 +5,7 @@ use axum::Router;
 use serde::Serialize;
 use tokio::sync::watch;
 
+use crate::at_rest::{self, AtRestKey};
 use crate::settings::Settings;
 use crate::store::Store;
 use crate::sync::SyncStore;
@@ -126,9 +127,17 @@ impl AppState {
     /// (`sync/` and `store/` respectively) so they can coexist during the
     /// migration window without either being moved out from under the
     /// other - see `Store::open`'s doc comment.
-    pub fn new(bearer_token: String, settings: Settings, app_data_dir: PathBuf) -> Result<Self, String> {
+    ///
+    /// `storage_key` encrypts everything both stores write to disk - see
+    /// `at_rest`.
+    pub fn new(
+        bearer_token: String,
+        settings: Settings,
+        app_data_dir: PathBuf,
+        storage_key: &[u8; at_rest::KEY_LEN],
+    ) -> Result<Self, String> {
         let sync_dir = app_data_dir.join("sync");
-        let store = Store::open(&app_data_dir).map_err(|e| e.to_string())?;
+        let store = Store::open(&app_data_dir, storage_key).map_err(|e| e.to_string())?;
         Ok(Self {
             bearer_token: RwLock::new(bearer_token),
             settings: RwLock::new(settings),
@@ -140,7 +149,7 @@ impl AppState {
             relay_api_key: watch::channel(None).0,
             router: OnceLock::new(),
             tray_items: OnceLock::new(),
-            sync: SyncStore::new(sync_dir),
+            sync: SyncStore::new(sync_dir, AtRestKey::new(storage_key)),
             store,
         })
     }

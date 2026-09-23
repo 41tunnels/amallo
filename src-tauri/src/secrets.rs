@@ -29,6 +29,12 @@ struct SecretFile {
     /// ever learns its SHA-256.
     #[serde(default)]
     openai_api_key: String,
+    /// AES-256 key for the at-rest encryption of synced documents and
+    /// blobs (see `at_rest`), base64url. Never regenerated in place:
+    /// losing it makes the stored copies unreadable, and the stores then
+    /// start over empty for clients to re-push (see `Store::open`).
+    #[serde(default)]
+    storage_key: String,
 }
 
 fn secrets_path(app: &AppHandle<Wry>) -> Result<PathBuf, String> {
@@ -178,6 +184,25 @@ fn decode_pairing(pair_id_b64: &str, psk_b64: &str) -> Result<([u8; 16], [u8; 32
         .try_into()
         .map_err(|_| "secrets file's relay_psk must decode to 32 bytes".to_string())?;
     Ok((pair_id, psk))
+}
+
+/// Load the at-rest storage key, generating and persisting one on first
+/// launch (mirrors `get_or_create_bearer_token`).
+pub fn get_or_create_storage_key(app: &AppHandle<Wry>) -> Result<[u8; 32], String> {
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let mut secrets = load(app)?;
+    if secrets.storage_key.is_empty() {
+        let key = generate_bytes::<32>();
+        secrets.storage_key = b64.encode(key);
+        store(app, &secrets)?;
+        return Ok(key);
+    }
+    let bytes = b64
+        .decode(&secrets.storage_key)
+        .map_err(|e| format!("secrets file has an invalid storage_key ({e})"))?;
+    bytes
+        .try_into()
+        .map_err(|_| "secrets file's storage_key must decode to 32 bytes".to_string())
 }
 
 /// Load the relay pairing material, generating and persisting a fresh
