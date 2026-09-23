@@ -2,12 +2,16 @@
 //! streaming a large blob out of a mutex-guarded connection would block
 //! every document write for the duration; a file handle doesn't. Refcounts
 //! and metadata (`blobs`, `record_blobs`) stay in SQLite.
+//!
+//! Files are sealed at rest (`crate::at_rest`) with the blob's hash as
+//! associated data; `size` in SQLite is the plaintext size.
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::{OptionalExtension, ToSql};
 
 use super::{hash, validate, Store, StoreError};
+use crate::at_rest;
 
 /// Hard cap on a single blob's size. Also enforced (redundantly, on
 /// purpose) by the API layer's `DefaultBodyLimit` before the body is even
@@ -90,7 +94,8 @@ pub fn put_blob(store: &Store, claimed_hash: &str, bytes: &[u8], now_ms: i64) ->
         std::fs::create_dir_all(parent).map_err(|e| BlobError::Io(format!("could not create blob dir: {e}")))?;
     }
     let tmp_path = store.blob_dir.join("tmp").join(format!("{}.part", random_suffix()));
-    std::fs::write(&tmp_path, bytes).map_err(|e| BlobError::Io(format!("could not write blob: {e}")))?;
+    let sealed = store.key.seal(claimed_hash.as_bytes(), bytes);
+    std::fs::write(&tmp_path, &sealed).map_err(|e| BlobError::Io(format!("could not write blob: {e}")))?;
     // Renaming over an existing file is safe: by construction (content
     // addressing) the bytes are identical, so concurrent uploads of the
     // same hash race harmlessly - same atomic temp+rename discipline the
@@ -133,7 +138,14 @@ pub fn read_blob(store: &Store, hash_str: &str) -> Result<Option<Vec<u8>>, Store
         return Ok(None);
     }
     match std::fs::read(blob_path(&store.blob_dir, hash_str)) {
-        Ok(bytes) => Ok(Some(bytes)),
+        // Unsealed files can only predate encryption; `seal_legacy_blobs`
+        // converts them on open, so this pass-through is belt and braces.
+        Ok(bytes) if !at_rest::is_sealed(&bytes) => Ok(Some(bytes)),
+        Ok(bytes) => store
+            .key
+            .open(hash_str.as_bytes(), &bytes)
+            .map(Some)
+            .map_err(|e| StoreError(format!("blob {hash_str}: {e}"))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(StoreError(format!("could not read blob {hash_str}: {e}"))),
     }
@@ -204,6 +216,47 @@ pub fn gc_blobs(store: &Store, grace_ms: i64, now_ms: i64) -> Result<GcStats, St
     Ok(GcStats {
         deleted: candidates.len() as i64,
     })
+}
+
+/// Seals every blob file written before at-rest encryption existed, and
+/// clears `tmp/` (a leftover `.part` from an interrupted upload may be
+/// plaintext, and nothing resumes it). Called from `Store::open`, before
+/// the API can serve any request. Returns the number of blobs sealed.
+pub fn seal_legacy_blobs(store: &Store) -> Result<usize, StoreError> {
+    let io = |e: std::io::Error| StoreError(format!("could not seal existing blobs: {e}"));
+    if let Ok(entries) = std::fs::read_dir(store.blob_dir.join("tmp")) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+
+    let mut sealed = 0;
+    for l1 in std::fs::read_dir(&store.blob_dir).map_err(io)?.flatten() {
+        if l1.file_name() == "tmp" || !l1.path().is_dir() {
+            continue;
+        }
+        for l2 in std::fs::read_dir(l1.path()).map_err(io)?.flatten() {
+            if !l2.path().is_dir() {
+                continue;
+            }
+            for file in std::fs::read_dir(l2.path()).map_err(io)?.flatten() {
+                let path = file.path();
+                let name = file.file_name().to_string_lossy().into_owned();
+                if !validate::valid_hash(&name) {
+                    continue;
+                }
+                let bytes = std::fs::read(&path).map_err(io)?;
+                if at_rest::is_sealed(&bytes) {
+                    continue;
+                }
+                let tmp_path = store.blob_dir.join("tmp").join(format!("{}.part", random_suffix()));
+                std::fs::write(&tmp_path, store.key.seal(name.as_bytes(), &bytes)).map_err(io)?;
+                std::fs::rename(&tmp_path, &path).map_err(io)?;
+                sealed += 1;
+            }
+        }
+    }
+    Ok(sealed)
 }
 
 #[cfg(test)]
@@ -361,6 +414,32 @@ mod tests {
         let stats = s.gc_blobs(0, 10_000_000).unwrap();
         assert_eq!(stats.deleted, 1);
         assert!(s.read_blob(&h).unwrap().is_none());
+    }
+
+    #[test]
+    fn blob_files_are_sealed_on_disk() {
+        let s = store();
+        let bytes = b"findme-needle avatar";
+        let h = hash_of(bytes);
+        s.put_blob(&h, bytes, 0).unwrap();
+        let on_disk = std::fs::read(blob_path(&s.blob_dir, &h)).unwrap();
+        assert!(at_rest::is_sealed(&on_disk));
+        assert!(!on_disk.windows(13).any(|w| w == b"findme-needle"));
+        assert_eq!(s.read_blob(&h).unwrap().unwrap(), bytes);
+    }
+
+    #[test]
+    fn legacy_plaintext_blobs_are_sealed() {
+        let s = store();
+        let bytes = b"old avatar";
+        let h = hash_of(bytes);
+        s.put_blob(&h, bytes, 0).unwrap();
+        // Overwrite with the pre-encryption on-disk form.
+        std::fs::write(blob_path(&s.blob_dir, &h), bytes).unwrap();
+        assert_eq!(seal_legacy_blobs(&s).unwrap(), 1);
+        assert!(at_rest::is_sealed(&std::fs::read(blob_path(&s.blob_dir, &h)).unwrap()));
+        assert_eq!(s.read_blob(&h).unwrap().unwrap(), bytes);
+        assert_eq!(seal_legacy_blobs(&s).unwrap(), 0, "idempotent");
     }
 
     #[test]

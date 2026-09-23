@@ -279,7 +279,7 @@ mod tests {
     async fn spawn_test_proxy() -> (String, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let state = Arc::new(
-            AppState::new(TOKEN.to_string(), Settings::default(), dir.path().to_path_buf())
+            AppState::new(TOKEN.to_string(), Settings::default(), dir.path().to_path_buf(), &[7; 32])
                 .unwrap(),
         );
         let router = build_router(state);
