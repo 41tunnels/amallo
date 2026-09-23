@@ -4,7 +4,8 @@
 //! several OpenCharUI web clients pointed at the same instance can sync their
 //! characters, personas and chats. Records are wrapped in an [`Envelope`] and
 //! merged last-write-wins by `updated_at`; the `data` payload is never
-//! inspected. One JSON file per collection lives under `<app_data>/sync/`.
+//! inspected. One JSON file per collection lives under `<app_data>/sync/`,
+//! sealed at rest with the storage key (see `crate::at_rest`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -17,11 +18,24 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::at_rest::{self, AtRestKey};
 use crate::proxy::ProxyCtx;
 
 /// Collections a client may sync. Anything else is a 404 — keeps arbitrary
 /// files from being created under the sync dir.
 const COLLECTIONS: &[&str] = &["characters", "personas", "chats"];
+
+/// A small sealed file whose only job is to say whether the current key
+/// is the one the collection files were sealed under.
+const KEY_CHECK_FILE: &str = ".keycheck";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyCheck {
+    Matches,
+    Mismatch,
+    /// No check file yet: a sync dir from before it existed, or none at all.
+    Missing,
+}
 
 /// One synced record. `data` is the full client-side document (opaque here);
 /// it is `None` for tombstones (`deleted = true`).
@@ -67,14 +81,80 @@ fn wins(incoming: &Envelope, existing: &Envelope) -> bool {
 /// serialises the read-modify-write cycle since axum handlers run concurrently.
 pub struct SyncStore {
     dir: PathBuf,
+    key: AtRestKey,
     lock: Mutex<()>,
 }
 
 impl SyncStore {
-    pub fn new(dir: PathBuf) -> Self {
-        Self {
+    pub fn new(dir: PathBuf, key: AtRestKey) -> Self {
+        let store = Self {
             dir,
+            key,
             lock: Mutex::new(()),
+        };
+        store.seal_existing();
+        store
+    }
+
+    /// Rewrites collection files from before at-rest encryption in sealed
+    /// form, and moves aside any sealed under a key we no longer have
+    /// (`secrets.json` was reset): the server copy is only a relay point,
+    /// and the `missing` list makes clients push their records back.
+    ///
+    /// Whether the key still matches is answered by the tiny `KEY_CHECK_FILE`
+    /// rather than by decrypting every collection on every launch; only a
+    /// sync dir from before that file existed pays for a full check, once.
+    fn seal_existing(&self) {
+        let key_check = self.key_check();
+        for collection in COLLECTIONS {
+            let path = self.collection_path(collection);
+            let _ = fs::remove_file(path.with_extension("json.tmp"));
+            let sealed = match at_rest::file_is_sealed(&path) {
+                Ok(sealed) => sealed,
+                Err(_) => continue, // absent (or unreadable, which load_map will report)
+            };
+            if sealed {
+                let readable = match key_check {
+                    KeyCheck::Matches => true,
+                    KeyCheck::Mismatch => false,
+                    KeyCheck::Missing => fs::read(&path)
+                        .map(|bytes| self.key.open(collection.as_bytes(), &bytes).is_ok())
+                        .unwrap_or(false),
+                };
+                if !readable {
+                    let aside = path.with_extension("json.unreadable");
+                    eprintln!("[sync] {path:?} was sealed with another key; moving it to {aside:?}");
+                    let _ = fs::rename(&path, &aside);
+                }
+                continue;
+            }
+            match self.load_map(collection, &path).and_then(|map| self.store_map(collection, &path, &map)) {
+                Ok(()) => eprintln!("[sync] encrypted {path:?} at rest"),
+                Err(e) => eprintln!("[sync] could not encrypt {path:?}: {e}"),
+            }
+        }
+        if key_check != KeyCheck::Matches {
+            self.write_key_check();
+        }
+    }
+
+    fn key_check(&self) -> KeyCheck {
+        match fs::read(self.dir.join(KEY_CHECK_FILE)) {
+            Ok(bytes) => match self.key.open(KEY_CHECK_FILE.as_bytes(), &bytes) {
+                Ok(_) => KeyCheck::Matches,
+                Err(_) => KeyCheck::Mismatch,
+            },
+            Err(_) => KeyCheck::Missing,
+        }
+    }
+
+    fn write_key_check(&self) {
+        if fs::create_dir_all(&self.dir).is_err() {
+            return;
+        }
+        let path = self.dir.join(KEY_CHECK_FILE);
+        if let Err(e) = fs::write(&path, self.key.seal(KEY_CHECK_FILE.as_bytes(), b"amallo")) {
+            eprintln!("[sync] could not write {path:?}: {e}");
         }
     }
 
@@ -82,10 +162,20 @@ impl SyncStore {
         self.dir.join(format!("{collection}.json"))
     }
 
-    fn load_map(path: &Path) -> Result<HashMap<String, Envelope>, String> {
+    /// The collection name is the associated data, so one collection's
+    /// file can't be passed off as another's.
+    fn load_map(&self, collection: &str, path: &Path) -> Result<HashMap<String, Envelope>, String> {
         match fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("sync store {path:?} is corrupt: {e}")),
+            Ok(bytes) => {
+                let json = if at_rest::is_sealed(&bytes) {
+                    self.key
+                        .open(collection.as_bytes(), &bytes)
+                        .map_err(|e| format!("sync store {path:?}: {e}"))?
+                } else {
+                    bytes
+                };
+                serde_json::from_slice(&json).map_err(|e| format!("sync store {path:?} is corrupt: {e}"))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
             Err(e) => Err(format!("could not read sync store {path:?}: {e}")),
         }
@@ -93,13 +183,14 @@ impl SyncStore {
 
     /// Atomic write: serialise to a sibling temp file, then rename over the
     /// target (same directory → same filesystem → atomic replace).
-    fn store_map(path: &Path, map: &HashMap<String, Envelope>) -> Result<(), String> {
+    fn store_map(&self, collection: &str, path: &Path, map: &HashMap<String, Envelope>) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("could not create sync dir: {e}"))?;
         }
-        let json = serde_json::to_vec_pretty(map).map_err(|e| e.to_string())?;
+        let json = serde_json::to_vec(map).map_err(|e| e.to_string())?;
+        let sealed = self.key.seal(collection.as_bytes(), &json);
         let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, &json).map_err(|e| format!("could not write sync store: {e}"))?;
+        fs::write(&tmp, &sealed).map_err(|e| format!("could not write sync store: {e}"))?;
         fs::rename(&tmp, path).map_err(|e| format!("could not commit sync store: {e}"))?;
         Ok(())
     }
@@ -109,7 +200,7 @@ impl SyncStore {
     pub fn exchange(&self, collection: &str, req: SyncRequest) -> Result<SyncResponse, String> {
         let _guard = self.lock.lock().map_err(|e| e.to_string())?;
         let path = self.collection_path(collection);
-        let mut map = Self::load_map(&path)?;
+        let mut map = self.load_map(collection, &path)?;
 
         let mut changed = false;
         for incoming in req.records {
@@ -141,7 +232,7 @@ impl SyncStore {
             .collect();
 
         if changed {
-            Self::store_map(&path, &map)?;
+            self.store_map(collection, &path, &map)?;
         }
 
         Ok(SyncResponse { records, missing })
@@ -151,7 +242,7 @@ impl SyncStore {
     /// endpoint for debugging and tests.
     pub fn all(&self, collection: &str) -> Result<Vec<Envelope>, String> {
         let _guard = self.lock.lock().map_err(|e| e.to_string())?;
-        let map = Self::load_map(&self.collection_path(collection))?;
+        let map = self.load_map(collection, &self.collection_path(collection))?;
         Ok(map.into_values().collect())
     }
 }
@@ -232,7 +323,7 @@ mod tests {
 
     fn store() -> (SyncStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        (SyncStore::new(dir.path().to_path_buf()), dir)
+        (SyncStore::new(dir.path().to_path_buf(), AtRestKey::random()), dir)
     }
 
     #[test]
@@ -331,7 +422,7 @@ mod tests {
     fn persists_across_instances() {
         let dir = tempfile::tempdir().unwrap();
         {
-            let store = SyncStore::new(dir.path().to_path_buf());
+            let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]));
             store
                 .exchange(
                     "characters",
@@ -342,9 +433,64 @@ mod tests {
                 )
                 .unwrap();
         }
-        let reopened = SyncStore::new(dir.path().to_path_buf());
+        let reopened = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]));
         let all = reopened.all("characters").unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, "a");
+    }
+
+    #[test]
+    fn legacy_plaintext_file_is_sealed_on_open_and_still_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chats.json");
+        fs::write(&path, r#"{"a":{"id":"a","updatedAt":1,"data":{"text":"findme-needle"}}}"#).unwrap();
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]));
+        let on_disk = fs::read(&path).unwrap();
+        assert!(at_rest::is_sealed(&on_disk));
+        assert!(!on_disk.windows(13).any(|w| w == b"findme-needle"));
+        assert_eq!(store.all("chats").unwrap()[0].id, "a");
+    }
+
+    #[test]
+    fn file_sealed_under_another_key_is_moved_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]))
+            .exchange("chats", SyncRequest { records: vec![env("a", 1)], known: HashMap::new() })
+            .unwrap();
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[9; 32]));
+        assert!(store.all("chats").unwrap().is_empty());
+        assert!(dir.path().join("chats.json.unreadable").exists());
+    }
+
+    #[test]
+    fn key_check_file_catches_a_key_change_without_decrypting_collections() {
+        let dir = tempfile::tempdir().unwrap();
+        SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]))
+            .exchange("chats", SyncRequest { records: vec![env("a", 1)], known: HashMap::new() })
+            .unwrap();
+        assert!(dir.path().join(KEY_CHECK_FILE).exists());
+
+        // Same key: nothing moved.
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]));
+        assert_eq!(store.all("chats").unwrap().len(), 1);
+
+        // New key: moved aside, and the check file now matches the new key.
+        SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[9; 32]));
+        assert!(dir.path().join("chats.json.unreadable").exists());
+        assert!(!dir.path().join("chats.json").exists());
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[9; 32]));
+        assert_eq!(store.key_check(), KeyCheck::Matches);
+    }
+
+    #[test]
+    fn sealed_files_without_a_check_file_are_verified_once() {
+        let dir = tempfile::tempdir().unwrap();
+        SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]))
+            .exchange("chats", SyncRequest { records: vec![env("a", 1)], known: HashMap::new() })
+            .unwrap();
+        fs::remove_file(dir.path().join(KEY_CHECK_FILE)).unwrap();
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]));
+        assert_eq!(store.all("chats").unwrap().len(), 1, "readable files must not be moved aside");
+        assert_eq!(store.key_check(), KeyCheck::Matches);
     }
 }

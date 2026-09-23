@@ -11,6 +11,12 @@
 //!   blobs/<h0><h1>/<h2><h3>/<hash>   content-addressed blob bytes
 //!   blobs/tmp/                       in-progress uploads
 //!
+//! Document bodies and blob bytes are encrypted at rest with the key from
+//! `secrets.json` (see `crate::at_rest`); namespaces, keys, hashes and
+//! timestamps stay in the clear so the sync protocol works unchanged. Rows
+//! and blobs written before encryption existed are sealed in place on the
+//! first `Store::open` that sees them.
+//!
 //! A pre-existing `<app_data>/sync/` (the old per-collection JSON files) is
 //! renamed to `<app_data>/sync-legacy-v0/` on first open and never read —
 //! see the doc comment on `Store::open` for why migration is deliberately
@@ -25,7 +31,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
+
+use crate::at_rest::{self, AtRestKey};
 
 pub use blobs::{BlobError, BlobPutOutcome, GcStats};
 pub use records::{
@@ -65,7 +73,24 @@ pub struct InfoSnapshot {
 pub struct Store {
     conn: Mutex<Connection>,
     blob_dir: PathBuf,
+    key: AtRestKey,
     pub store_id: String,
+}
+
+/// Associated data binding a sealed `records.data` value to its row.
+pub(crate) fn record_aad(namespace: &str, key: &str) -> Vec<u8> {
+    format!("{namespace}\0{key}").into_bytes()
+}
+
+/// Sealed into `meta` on first open so a later open can tell "wrong key"
+/// apart from "corrupt row" before touching any real data.
+const KEY_CHECK_AAD: &[u8] = b"amallo-store-key-check";
+const KEY_CHECK_PLAIN: &str = "amallo";
+
+enum KeyCheck {
+    Matches,
+    Fresh,
+    Mismatch,
 }
 
 impl Store {
@@ -79,9 +104,33 @@ impl Store {
     /// running endpoint would break `/amallo/sync/*` rather than retire it
     /// cleanly. See `retire_legacy_sync_dir`, called only once `sync.rs`
     /// itself is deleted.
-    pub fn open(app_data_dir: &Path) -> Result<Self, StoreError> {
+    pub fn open(app_data_dir: &Path, key: &[u8; at_rest::KEY_LEN]) -> Result<Self, StoreError> {
         let store_dir = app_data_dir.join("store");
-        fs::create_dir_all(&store_dir)
+        match Self::open_dir(&store_dir, AtRestKey::new(key))? {
+            Some(store) => Ok(store),
+            None => {
+                // The store was sealed under a key we no longer have
+                // (`secrets.json` deleted or replaced). Its contents are
+                // unrecoverable, so move it aside and start empty: the new
+                // store_id makes every client do a full resync and re-push
+                // its complete replica, same as a fresh install.
+                let aside = app_data_dir.join(format!("store-unreadable-{}", now_ms()));
+                eprintln!(
+                    "[store] storage key does not match {}; moving it to {} and starting fresh",
+                    store_dir.display(),
+                    aside.display()
+                );
+                fs::rename(&store_dir, &aside)
+                    .map_err(|e| StoreError(format!("could not move unreadable store aside: {e}")))?;
+                Self::open_dir(&store_dir, AtRestKey::new(key))?
+                    .ok_or_else(|| StoreError("fresh store failed its key check".into()))
+            }
+        }
+    }
+
+    /// `None` when the store at `store_dir` was sealed under another key.
+    fn open_dir(store_dir: &Path, key: AtRestKey) -> Result<Option<Self>, StoreError> {
+        fs::create_dir_all(store_dir)
             .map_err(|e| StoreError(format!("could not create store dir: {e}")))?;
         let blob_dir = store_dir.join("blobs");
         fs::create_dir_all(blob_dir.join("tmp"))
@@ -90,13 +139,60 @@ impl Store {
         let db_path = store_dir.join("records.db");
         let conn = Connection::open(&db_path)?;
         migrate(&conn)?;
+        match check_key(&conn, &key)? {
+            KeyCheck::Mismatch => return Ok(None),
+            KeyCheck::Matches | KeyCheck::Fresh => {}
+        }
         let store_id = get_or_create_store_id(&conn)?;
 
-        Ok(Self {
+        let store = Self {
             conn: Mutex::new(conn),
             blob_dir,
+            key,
             store_id,
-        })
+        };
+        store.seal_legacy_plaintext()?;
+        Ok(Some(store))
+    }
+
+    /// Encrypts any rows and blobs written before at-rest encryption
+    /// existed. Cheap and idempotent once done: already-sealed rows are
+    /// filtered out in SQL, and sealed blobs are recognised by their
+    /// header without being decrypted.
+    fn seal_legacy_plaintext(&self) -> Result<(), StoreError> {
+        let sealed_rows = {
+            let mut conn = self.conn.lock().unwrap();
+            let tx = conn.transaction()?;
+            let rows: Vec<(String, String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT namespace, key, data FROM records
+                     WHERE data IS NOT NULL AND substr(data, 1, 5) != 'enc1:'",
+                )?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            for (ns, key, data) in &rows {
+                let sealed = self.key.seal_text(&record_aad(ns, key), data);
+                tx.execute(
+                    "UPDATE records SET data = ?1 WHERE namespace = ?2 AND key = ?3",
+                    (&sealed, ns, key),
+                )?;
+            }
+            tx.commit()?;
+            if !rows.is_empty() {
+                // The old plaintext still sits in freed pages and in the
+                // WAL; rebuild the file and truncate the WAL so it's gone
+                // from disk, not merely unreferenced.
+                conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
+            }
+            rows.len()
+        };
+
+        let sealed_blobs = blobs::seal_legacy_blobs(self)?;
+        if sealed_rows > 0 || sealed_blobs > 0 {
+            eprintln!("[store] encrypted {sealed_rows} existing record(s) and {sealed_blobs} blob(s) at rest");
+        }
+        Ok(())
     }
 
     /// In-memory store — same schema, no filesystem footprint beyond a
@@ -107,11 +203,14 @@ impl Store {
     pub fn open_in_memory(blob_dir: PathBuf) -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
         migrate(&conn)?;
+        let key = AtRestKey::random();
+        check_key(&conn, &key)?;
         let store_id = get_or_create_store_id(&conn)?;
         fs::create_dir_all(blob_dir.join("tmp")).ok();
         Ok(Self {
             conn: Mutex::new(conn),
             blob_dir,
+            key,
             store_id,
         })
     }
@@ -223,6 +322,25 @@ pub fn retire_legacy_sync_dir(app_data_dir: &Path) {
     match fs::rename(&legacy, &renamed) {
         Ok(()) => eprintln!("[store] moved legacy sync dir to {}", renamed.display()),
         Err(e) => eprintln!("[store] could not move legacy sync dir: {e}"),
+    }
+}
+
+fn check_key(conn: &Connection, key: &AtRestKey) -> Result<KeyCheck, StoreError> {
+    let existing: Option<String> = conn
+        .query_row("SELECT v FROM meta WHERE k = 'key_check'", [], |r| r.get(0))
+        .optional()?;
+    match existing {
+        Some(sealed) => Ok(match key.open_text(KEY_CHECK_AAD, &sealed) {
+            Ok(plain) if plain == KEY_CHECK_PLAIN => KeyCheck::Matches,
+            _ => KeyCheck::Mismatch,
+        }),
+        None => {
+            conn.execute(
+                "INSERT INTO meta (k, v) VALUES ('key_check', ?1)",
+                [key.seal_text(KEY_CHECK_AAD, KEY_CHECK_PLAIN)],
+            )?;
+            Ok(KeyCheck::Fresh)
+        }
     }
 }
 

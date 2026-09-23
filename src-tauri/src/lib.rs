@@ -1,4 +1,5 @@
 mod api;
+pub mod at_rest;
 mod commands;
 mod ollama;
 mod pairing;
@@ -44,6 +45,8 @@ pub fn run() {
         .setup(|app| {
             let bearer_token = secrets::get_or_create_bearer_token(app.handle())
                 .map_err(|e| format!("failed to load secrets: {e}"))?;
+            let storage_key = secrets::get_or_create_storage_key(app.handle())
+                .map_err(|e| format!("failed to load secrets: {e}"))?;
             let settings = settings::load(app.handle());
 
             let app_data_dir = app
@@ -52,7 +55,7 @@ pub fn run() {
                 .map_err(|e| format!("could not resolve app data dir: {e}"))?;
 
             let state = Arc::new(
-                AppState::new(bearer_token, settings, app_data_dir)
+                AppState::new(bearer_token, settings, app_data_dir, &storage_key)
                     .map_err(|e| format!("failed to open store: {e}"))?,
             );
             api::v1::spawn_maintenance(state.clone());

@@ -5,7 +5,8 @@ use std::collections::HashSet;
 
 use rusqlite::{Connection, OptionalExtension, ToSql, Transaction};
 
-use super::{hash, validate, Store, StoreError};
+use super::{hash, record_aad, validate, Store, StoreError};
+use crate::at_rest::{self, AtRestKey};
 
 // --- wire-shaped types (API layer maps these to/from JSON) -----------------
 
@@ -210,7 +211,7 @@ fn rejected(namespace: &str, key: &str, message: impl Into<String>) -> PushOutco
     }
 }
 
-fn push_one(tx: &Transaction, rec: PushRecord, now_ms: i64) -> Result<PushOutcome, StoreError> {
+fn push_one(tx: &Transaction, key: &AtRestKey, rec: PushRecord, now_ms: i64) -> Result<PushOutcome, StoreError> {
     if !validate::valid_namespace(&rec.namespace) {
         return Ok(rejected(&rec.namespace, &rec.key, "invalid namespace"));
     }
@@ -308,6 +309,10 @@ fn push_one(tx: &Transaction, rec: PushRecord, now_ms: i64) -> Result<PushOutcom
     }
 
     let seq = next_seq(tx)?;
+    let sealed = rec
+        .data
+        .as_deref()
+        .map(|d| key.seal_text(&record_aad(&rec.namespace, &rec.key), d));
     tx.execute(
         "INSERT INTO records (namespace, key, seq, hash, updated_at, deleted, data, server_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -321,7 +326,7 @@ fn push_one(tx: &Transaction, rec: PushRecord, now_ms: i64) -> Result<PushOutcom
             &rec.hash,
             rec.updated_at,
             rec.deleted as i64,
-            &rec.data,
+            &sealed,
             now_ms,
         ),
     )?;
@@ -355,7 +360,7 @@ pub fn push(store: &Store, records: Vec<PushRecord>, now_ms: i64) -> Result<Vec<
     let tx = conn.transaction()?;
     let mut outcomes = Vec::with_capacity(records.len());
     for rec in records {
-        outcomes.push(push_one(&tx, rec, now_ms)?);
+        outcomes.push(push_one(&tx, &store.key, rec, now_ms)?);
     }
     tx.commit()?;
     Ok(outcomes)
@@ -373,6 +378,21 @@ fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<Record> {
     })
 }
 
+/// Replaces a row's sealed `data` with the plaintext the client pushed.
+/// Rows `Store::open` hasn't sealed yet can't exist once it returns, but a
+/// plaintext value is passed through rather than failing the whole pull.
+fn unseal(key: &AtRestKey, mut rec: Record) -> Result<Record, StoreError> {
+    if let Some(data) = rec.data.take() {
+        rec.data = Some(if at_rest::is_sealed_text(&data) {
+            key.open_text(&record_aad(&rec.namespace, &rec.key), &data)
+                .map_err(|e| StoreError(format!("record {}/{}: {e}", rec.namespace, rec.key)))?
+        } else {
+            data
+        });
+    }
+    Ok(rec)
+}
+
 pub fn pull(store: &Store, query: PullQuery) -> Result<PullOutcome, StoreError> {
     let conn = store.conn.lock().unwrap();
     let head = Store::head_locked(&conn)?;
@@ -386,7 +406,7 @@ pub fn pull(store: &Store, query: PullQuery) -> Result<PullOutcome, StoreError> 
         let mut records = Vec::with_capacity(keys.len());
         for (ns, key) in keys {
             if let Some(r) = stmt.query_row((ns, key), row_to_record).optional()? {
-                records.push(r);
+                records.push(unseal(&store.key, r)?);
             }
         }
         return Ok(PullOutcome {
@@ -431,7 +451,7 @@ pub fn pull(store: &Store, query: PullQuery) -> Result<PullOutcome, StoreError> 
     let mut rows = stmt.query(param_refs.as_slice())?;
     let mut records = Vec::new();
     while let Some(row) = rows.next()? {
-        records.push(row_to_record(row)?);
+        records.push(unseal(&store.key, row_to_record(row)?)?);
     }
 
     let more = records.len() as i64 > limit;
@@ -527,6 +547,8 @@ pub fn reap_tombstones(
 mod tests {
     use super::*;
 
+    const KEY: [u8; 32] = [7; 32];
+
     fn store() -> Store {
         let dir = tempfile::tempdir().unwrap();
         Store::open_in_memory(dir.keep().join("blobs")).unwrap()
@@ -621,11 +643,11 @@ mod tests {
         let app_data = dir.path();
         let store_id;
         {
-            let s = Store::open(app_data).unwrap();
+            let s = Store::open(app_data, &KEY).unwrap();
             s.push(vec![rec("characters", "a", r#"{"v":1}"#, 100)], 1000).unwrap();
             store_id = s.store_id.clone();
         }
-        let s2 = Store::open(app_data).unwrap();
+        let s2 = Store::open(app_data, &KEY).unwrap();
         assert_eq!(s2.store_id, store_id);
         let pulled = s2.pull(PullQuery { since: 0, limit: 10, ..Default::default() }).unwrap();
         assert_eq!(pulled.records.len(), 1);
@@ -721,6 +743,64 @@ mod tests {
         assert_eq!(r2.reaped, 1);
         let pulled = s.pull(PullQuery { since: 0, limit: 10, ..Default::default() }).unwrap();
         assert!(pulled.records.is_empty());
+    }
+
+    #[test]
+    fn document_bodies_are_not_plaintext_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path(), &KEY).unwrap();
+        s.push(vec![rec("chats", "c1", r#"{"text":"findme-needle"}"#, 100)], 1000).unwrap();
+        drop(s);
+        for entry in std::fs::read_dir(dir.path().join("store")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(!bytes.windows(13).any(|w| w == b"findme-needle"), "plaintext in {path:?}");
+            }
+        }
+        let s = Store::open(dir.path(), &KEY).unwrap();
+        let pulled = s.pull(PullQuery { since: 0, limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(pulled.records[0].data.as_deref(), Some(r#"{"text":"findme-needle"}"#));
+    }
+
+    #[test]
+    fn legacy_plaintext_rows_are_sealed_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = r#"{"text":"findme-needle"}"#;
+        {
+            let s = Store::open(dir.path(), &KEY).unwrap();
+            // Simulate a row written by a pre-encryption build.
+            s.conn.lock().unwrap().execute(
+                "INSERT INTO records (namespace, key, seq, hash, updated_at, deleted, data, server_at)
+                 VALUES ('chats', 'old', 1, ?1, 100, 0, ?2, 100)",
+                (hash::sha256_hex(body.as_bytes()), body),
+            ).unwrap();
+            s.conn.lock().unwrap().execute("UPDATE seq_counter SET next = 2", []).unwrap();
+        }
+        let s = Store::open(dir.path(), &KEY).unwrap();
+        let raw: String = s.conn.lock().unwrap()
+            .query_row("SELECT data FROM records WHERE key = 'old'", [], |r| r.get(0)).unwrap();
+        assert!(at_rest::is_sealed_text(&raw));
+        let pulled = s.pull(PullQuery { since: 0, limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(pulled.records[0].data.as_deref(), Some(body));
+    }
+
+    #[test]
+    fn wrong_key_moves_the_store_aside_and_starts_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_id = {
+            let s = Store::open(dir.path(), &KEY).unwrap();
+            s.push(vec![rec("chats", "c1", r#"{"v":1}"#, 100)], 1000).unwrap();
+            s.store_id.clone()
+        };
+        let s = Store::open(dir.path(), &[9; 32]).unwrap();
+        assert_ne!(s.store_id, old_id, "a new store_id forces clients to re-push");
+        assert_eq!(s.info().unwrap().head, 0);
+        let aside = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("store-unreadable-"));
+        assert!(aside);
     }
 
     #[test]
