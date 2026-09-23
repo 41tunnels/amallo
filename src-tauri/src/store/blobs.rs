@@ -221,7 +221,8 @@ pub fn gc_blobs(store: &Store, grace_ms: i64, now_ms: i64) -> Result<GcStats, St
 /// Seals every blob file written before at-rest encryption existed, and
 /// clears `tmp/` (a leftover `.part` from an interrupted upload may be
 /// plaintext, and nothing resumes it). Called from `Store::open`, before
-/// the API can serve any request. Returns the number of blobs sealed.
+/// the API can serve any request. Once everything is sealed this costs one
+/// 8-byte header read per blob. Returns the number of blobs sealed.
 pub fn seal_legacy_blobs(store: &Store) -> Result<usize, StoreError> {
     let io = |e: std::io::Error| StoreError(format!("could not seal existing blobs: {e}"));
     if let Ok(entries) = std::fs::read_dir(store.blob_dir.join("tmp")) {
@@ -245,10 +246,10 @@ pub fn seal_legacy_blobs(store: &Store) -> Result<usize, StoreError> {
                 if !validate::valid_hash(&name) {
                     continue;
                 }
-                let bytes = std::fs::read(&path).map_err(io)?;
-                if at_rest::is_sealed(&bytes) {
+                if at_rest::file_is_sealed(&path).map_err(io)? {
                     continue;
                 }
+                let bytes = std::fs::read(&path).map_err(io)?;
                 let tmp_path = store.blob_dir.join("tmp").join(format!("{}.part", random_suffix()));
                 std::fs::write(&tmp_path, store.key.seal(name.as_bytes(), &bytes)).map_err(io)?;
                 std::fs::rename(&tmp_path, &path).map_err(io)?;

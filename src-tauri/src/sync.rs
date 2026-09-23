@@ -25,6 +25,18 @@ use crate::proxy::ProxyCtx;
 /// files from being created under the sync dir.
 const COLLECTIONS: &[&str] = &["characters", "personas", "chats"];
 
+/// A small sealed file whose only job is to say whether the current key
+/// is the one the collection files were sealed under.
+const KEY_CHECK_FILE: &str = ".keycheck";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyCheck {
+    Matches,
+    Mismatch,
+    /// No check file yet: a sync dir from before it existed, or none at all.
+    Missing,
+}
+
 /// One synced record. `data` is the full client-side document (opaque here);
 /// it is `None` for tombstones (`deleted = true`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,13 +100,28 @@ impl SyncStore {
     /// form, and moves aside any sealed under a key we no longer have
     /// (`secrets.json` was reset): the server copy is only a relay point,
     /// and the `missing` list makes clients push their records back.
+    ///
+    /// Whether the key still matches is answered by the tiny `KEY_CHECK_FILE`
+    /// rather than by decrypting every collection on every launch; only a
+    /// sync dir from before that file existed pays for a full check, once.
     fn seal_existing(&self) {
+        let key_check = self.key_check();
         for collection in COLLECTIONS {
             let path = self.collection_path(collection);
             let _ = fs::remove_file(path.with_extension("json.tmp"));
-            let Ok(bytes) = fs::read(&path) else { continue };
-            if at_rest::is_sealed(&bytes) {
-                if self.key.open(collection.as_bytes(), &bytes).is_err() {
+            let sealed = match at_rest::file_is_sealed(&path) {
+                Ok(sealed) => sealed,
+                Err(_) => continue, // absent (or unreadable, which load_map will report)
+            };
+            if sealed {
+                let readable = match key_check {
+                    KeyCheck::Matches => true,
+                    KeyCheck::Mismatch => false,
+                    KeyCheck::Missing => fs::read(&path)
+                        .map(|bytes| self.key.open(collection.as_bytes(), &bytes).is_ok())
+                        .unwrap_or(false),
+                };
+                if !readable {
                     let aside = path.with_extension("json.unreadable");
                     eprintln!("[sync] {path:?} was sealed with another key; moving it to {aside:?}");
                     let _ = fs::rename(&path, &aside);
@@ -105,6 +132,29 @@ impl SyncStore {
                 Ok(()) => eprintln!("[sync] encrypted {path:?} at rest"),
                 Err(e) => eprintln!("[sync] could not encrypt {path:?}: {e}"),
             }
+        }
+        if key_check != KeyCheck::Matches {
+            self.write_key_check();
+        }
+    }
+
+    fn key_check(&self) -> KeyCheck {
+        match fs::read(self.dir.join(KEY_CHECK_FILE)) {
+            Ok(bytes) => match self.key.open(KEY_CHECK_FILE.as_bytes(), &bytes) {
+                Ok(_) => KeyCheck::Matches,
+                Err(_) => KeyCheck::Mismatch,
+            },
+            Err(_) => KeyCheck::Missing,
+        }
+    }
+
+    fn write_key_check(&self) {
+        if fs::create_dir_all(&self.dir).is_err() {
+            return;
+        }
+        let path = self.dir.join(KEY_CHECK_FILE);
+        if let Err(e) = fs::write(&path, self.key.seal(KEY_CHECK_FILE.as_bytes(), b"amallo")) {
+            eprintln!("[sync] could not write {path:?}: {e}");
         }
     }
 
@@ -410,5 +460,37 @@ mod tests {
         let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[9; 32]));
         assert!(store.all("chats").unwrap().is_empty());
         assert!(dir.path().join("chats.json.unreadable").exists());
+    }
+
+    #[test]
+    fn key_check_file_catches_a_key_change_without_decrypting_collections() {
+        let dir = tempfile::tempdir().unwrap();
+        SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]))
+            .exchange("chats", SyncRequest { records: vec![env("a", 1)], known: HashMap::new() })
+            .unwrap();
+        assert!(dir.path().join(KEY_CHECK_FILE).exists());
+
+        // Same key: nothing moved.
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]));
+        assert_eq!(store.all("chats").unwrap().len(), 1);
+
+        // New key: moved aside, and the check file now matches the new key.
+        SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[9; 32]));
+        assert!(dir.path().join("chats.json.unreadable").exists());
+        assert!(!dir.path().join("chats.json").exists());
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[9; 32]));
+        assert_eq!(store.key_check(), KeyCheck::Matches);
+    }
+
+    #[test]
+    fn sealed_files_without_a_check_file_are_verified_once() {
+        let dir = tempfile::tempdir().unwrap();
+        SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]))
+            .exchange("chats", SyncRequest { records: vec![env("a", 1)], known: HashMap::new() })
+            .unwrap();
+        fs::remove_file(dir.path().join(KEY_CHECK_FILE)).unwrap();
+        let store = SyncStore::new(dir.path().to_path_buf(), AtRestKey::new(&[7; 32]));
+        assert_eq!(store.all("chats").unwrap().len(), 1, "readable files must not be moved aside");
+        assert_eq!(store.key_check(), KeyCheck::Matches);
     }
 }

@@ -122,6 +122,22 @@ pub fn is_sealed(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
 }
 
+/// Whether the file at `path` starts with the sealed header. Reads only
+/// the header, so startup checks don't pull whole blobs off disk.
+pub fn file_is_sealed(path: &std::path::Path) -> std::io::Result<bool> {
+    use std::io::Read;
+    let mut header = [0u8; MAGIC.len()];
+    let mut file = std::fs::File::open(path)?;
+    let mut filled = 0;
+    while filled < header.len() {
+        match file.read(&mut header[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled == header.len() && header == *MAGIC)
+}
+
 /// Whether `text` was produced by [`AtRestKey::seal_text`].
 pub fn is_sealed_text(text: &str) -> bool {
     text.starts_with(TEXT_PREFIX)
@@ -156,6 +172,20 @@ mod tests {
         assert_eq!(k.open_text(b"chats\0b", &sealed), Err(OpenError));
         assert_eq!(AtRestKey::random().open_text(b"chats\0a", &sealed), Err(OpenError));
         assert_eq!(AtRestKey::random().open(b"x", &k.seal(b"x", b"y")), Err(OpenError));
+    }
+
+    #[test]
+    fn file_header_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = AtRestKey::random();
+        let sealed = dir.path().join("sealed");
+        std::fs::write(&sealed, k.seal(b"", b"payload")).unwrap();
+        assert!(file_is_sealed(&sealed).unwrap());
+        for (name, body) in [("plain", &b"{\"a\":1}"[..]), ("short", &b"AML"[..]), ("empty", &b""[..])] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, body).unwrap();
+            assert!(!file_is_sealed(&p).unwrap(), "{name}");
+        }
     }
 
     #[test]
